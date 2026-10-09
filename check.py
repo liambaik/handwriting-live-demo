@@ -7,8 +7,10 @@
   python check.py                 # iPhone 카메라 (기본 --device 0)
   python check.py --device 1      # Mac 내장 웹캠
   python check.py --image a.png   # 사진 한 장 판정
+  python check.py --image a.png --cutout a_cutout.png   # 판정하고, 글씨만 남긴 투명 PNG 도 저장
 
-단축키: q/ESC 종료, d 판정 정보(확률·특징값) 보기/숨기기, s 현재 화면 저장, r 화면 90° 회전
+단축키: q/ESC 종료, d 판정 정보(확률·특징값) 보기/숨기기, s 현재 화면 저장(+ 글씨 누끼 cutout.png),
+        m 글씨 누끼(종이는 투명) 미리보기 창 켜기/끄기, r 화면 90° 회전
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from hw_demo.cutout import CutoutConfig, checkerboard_preview, cutout, save_png
 from hw_demo.camera import Camera, load_rotation, save_rotation
 from hw_demo.keys import read_key
 from hw_demo.hw_features import DEFAULT_PARAMS, FEATURE_KEYS, HandwritingClassifier
@@ -30,6 +33,7 @@ from hw_demo.hw_features import DEFAULT_PARAMS, FEATURE_KEYS, HandwritingClassif
 IPHONE_PARAMS = DEFAULT_PARAMS.with_name("model_parameters_iphone.json")   # train_weights.py 가 만드는 파일
 
 WINDOW = "Handwriting Check"
+CUTOUT_WINDOW = "Handwriting Cutout"
 INK_MIN, INK_MAX = 12.0, 30.0   # 잉크 진하기 기준의 하한·상한 (화면 잡음의 5배를 이 범위로)
 PAPER_MAX_STD = 15.0   # 획 주변 밝기 표준편차가 이보다 크면 '고른 종이' 가 아님
 CONTRAST_RATIO = float("inf")   # (사용 안 함) 주변이 거친 곳의 획을 진하기로 인정하면 얼굴 머리카락도 통과해서 끔. 강판 색 펜은 채도로 잡음
@@ -47,6 +51,7 @@ def parse_args(argv=None):
                     help="판정할 가이드 박스 크기 (화면 대비 비율)")
     ap.add_argument("--params", default=None,
                     help="가중치 JSON (기본: iPhone 으로 다시 학습한 model_parameters_iphone.json 이 있으면 그것, 없으면 원래 JSON)")
+    ap.add_argument("--cutout", metavar="PNG", help="--image 와 함께: 글씨 획만 남긴 투명 배경 PNG 저장 경로")
     ap.add_argument("--smooth", type=int, default=8, help="최근 몇 프레임의 과반으로 표시할지 (깜빡임 방지)")
     ap.add_argument("--output", default="captures")
     return ap.parse_args(argv)
@@ -256,6 +261,11 @@ def main(argv=None) -> int:
             return 1
         hw, d, reason = judge(clf, g, live=False)
         print("1" if hw else "")
+        if args.cutout:
+            color = cv2.imread(args.image, cv2.IMREAD_COLOR)
+            rgba, mask, _ = cutout(color, CutoutConfig(drop_border=False))   # 사진 전체: 가이드 박스가 없어 테두리 제외 안 함
+            save_png(args.cutout, rgba)
+            print(f"  (누끼 저장: {args.cutout}, 글씨 픽셀 {int(mask.sum())}개)", file=sys.stderr)
         if d is not None:
             print(f"  (손글씨 확률 {d.prob:.3f}" + (f", 중앙값 대체: {', '.join(d.imputed)}" if d.imputed else "") + ")",
                   file=sys.stderr)
@@ -270,7 +280,7 @@ def main(argv=None) -> int:
     print(f"카메라 #{args.device} 시작. 박스 안에 비춘 것이 손글씨면 화면에 1 이 뜹니다. (d: 판정 정보, q: 종료)")
 
     history = deque(maxlen=args.smooth)
-    debug, misses = False, 0
+    debug, misses, show_cutout = False, 0, False
     try:
         while True:
             frame = cam.read()
@@ -290,12 +300,19 @@ def main(argv=None) -> int:
             show_one = sum(history) > len(history) / 2          # 최근 프레임 과반이 손글씨일 때만
             view = draw(frame, roi, show_one, d, debug, reason)
             cv2.imshow(WINDOW, view)
+            if show_cutout:                                       # 켰을 때만 계산 (프레임마다 모폴로지 연산)
+                rgba, _, _ = cutout(frame[y:y + h, x:x + w])
+                cv2.imshow(CUTOUT_WINDOW, checkerboard_preview(rgba))
 
             key = read_key(1)                                    # 한글 입력 상태여도 동작
             if key in ("q", "esc"):
                 break
             elif key == "d":
                 debug = not debug
+            elif key == "m":
+                show_cutout = not show_cutout
+                if not show_cutout:
+                    cv2.destroyWindow(CUTOUT_WINDOW)
             elif key == "r":
                 save_rotation(cam.turn())
                 print(f"화면 회전: {cam.rotate}°")
@@ -304,6 +321,7 @@ def main(argv=None) -> int:
                 dd.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(dd / "frame.png"), frame)
                 cv2.imwrite(str(dd / "view.png"), view)
+                save_png(dd / "cutout.png", cutout(frame[y:y + h, x:x + w])[0])      # 박스 안 글씨만, 배경 투명
                 info = {"shown": "1" if show_one else "", "this_frame_handwritten": hw, "reason": reason,
                         "prob": None if d is None else round(d.prob, 4),
                         "features": None if d is None else {k: round(v, 4) for k, v in d.features.items()}}
