@@ -50,6 +50,7 @@ class CutoutConfig:
     hw_threshold: float = 0.4       # 묶음의 손글씨 확률이 이 이상이면 유지 (판별기 기본 0.5 보다 낮춰 수기를 덜 놓치게)
     min_group_px: int = 40          # 이보다 잉크가 적은 묶음은 판별하지 않고 제외 (점·잔얼룩)
     feather: int = 0                # >0 이면 알파 가장자리를 이 크기(홀수 px)로 부드럽게
+    stroke_color: tuple = None      # 획을 이 색(BGR)으로 칠함. None 이면 원본 색 유지 (예: (0, 0, 255) = 빨강)
 
 
 def ink_polarity(gray: np.ndarray) -> str:
@@ -139,8 +140,11 @@ def stroke_mask(img: np.ndarray, cfg: CutoutConfig = CutoutConfig()) -> Dict[str
 
 
 def to_rgba(img: np.ndarray, mask: np.ndarray, cfg: CutoutConfig = CutoutConfig()) -> np.ndarray:
-    """원본 색을 유지한 채 마스크 밖을 투명하게 만든 BGRA."""
+    """마스크 밖을 투명하게 만든 BGRA. 획 색은 원본 그대로, cfg.stroke_color 가 있으면 그 색으로 칠함."""
     bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR) if img.ndim == 2 else img
+    if cfg.stroke_color is not None:
+        bgr = np.empty_like(bgr)
+        bgr[:] = cfg.stroke_color
     alpha = mask.astype(np.uint8) * 255
     if cfg.feather > 0:
         k = cfg.feather | 1

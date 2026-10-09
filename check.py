@@ -38,6 +38,7 @@ from hw_demo.hw_features import DEFAULT_PARAMS, FEATURE_KEYS, HandwritingClassif
 IPHONE_PARAMS = DEFAULT_PARAMS.with_name("model_parameters_iphone.json")   # train_weights.py 가 만드는 파일
 
 WINDOW = "Handwriting Check"
+CUTOUT_COLOR = (0, 0, 255)   # 누끼 획 색 (BGR 빨강). --cutout-original-color 를 주면 원래 색
 INK_MIN, INK_MAX = 12.0, 30.0   # 잉크 진하기 기준의 하한·상한 (화면 잡음의 5배를 이 범위로)
 PAPER_MAX_STD = 15.0   # 획 주변 밝기 표준편차가 이보다 크면 '고른 종이' 가 아님
 CONTRAST_RATIO = float("inf")   # (사용 안 함) 주변이 거친 곳의 획을 진하기로 인정하면 얼굴 머리카락도 통과해서 끔. 강판 색 펜은 채도로 잡음
@@ -58,6 +59,7 @@ def parse_args(argv=None):
     ap.add_argument("--cutout", metavar="PNG", help="--image 와 함께: 글씨 획만 남긴 투명 배경 PNG 저장 경로")
     ap.add_argument("--cutout-all", action="store_true",
                     help="누끼에 인쇄 글자도 포함 (기본: 손글씨로 판정된 묶음만 남김)")
+    ap.add_argument("--cutout-original-color", action="store_true", help="누끼 획을 빨강 대신 원래 색으로")
     ap.add_argument("--hw-threshold", type=float, default=0.4,
                     help="누끼에서 묶음을 손글씨로 볼 확률 기준 (낮추면 수기를 덜 놓치고 인쇄가 섞임, 높이면 반대)")
     ap.add_argument("--smooth", type=int, default=8, help="최근 몇 프레임의 과반으로 표시할지 (깜빡임 방지)")
@@ -222,7 +224,9 @@ def _thin(m: np.ndarray) -> np.ndarray:
 
 
 def make_cutout(img: np.ndarray, clf, hand_only: bool = True, **cfg_kw):
-    """(BGRA 누끼, 마스크). hand_only 면 손글씨로 판정된 묶음의 획만, 아니면 모든 획(인쇄 포함)."""
+    """(BGRA 누끼, 마스크). hand_only 면 손글씨로 판정된 묶음의 획만, 아니면 모든 획(인쇄 포함).
+    획은 기본으로 빨간색(CUTOUT_COLOR)으로 칠함. 원래 색은 stroke_color=None."""
+    cfg_kw.setdefault("stroke_color", CUTOUT_COLOR)
     cfg = CutoutConfig(**cfg_kw)
     if not hand_only:
         rgba, mask, _ = cutout(img, cfg)
@@ -370,6 +374,9 @@ def draw(frame, roi, show_one, d, debug, reason=""):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if args.cutout_original_color:
+        global CUTOUT_COLOR
+        CUTOUT_COLOR = None
     params = Path(args.params) if args.params else (IPHONE_PARAMS if IPHONE_PARAMS.exists() else DEFAULT_PARAMS)
     clf = HandwritingClassifier(params)
     print(f"가중치: {params.name}", file=sys.stderr)
