@@ -12,7 +12,7 @@
 누끼(cutout)는 손글씨로 판단해 1 이 떴을 때만 실행합니다. 손글씨가 아니면 누끼를 계산·저장하지 않습니다.
 
 단축키: q/ESC 종료, d 판정 정보(확률·특징값) 보기/숨기기, s 현재 화면 저장(+ 글씨 누끼 cutout.png),
-        m 글씨 누끼(종이는 투명) 미리보기 창 켜기/끄기,
+        m 2분할 화면 켜기/끄기 (왼쪽 카메라, 오른쪽 글씨 누끼 - 종이는 투명),
         a 누끼 대상 전환(손글씨만 <-> 인쇄 포함), r 화면 90° 회전
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ from hw_demo.hw_features import DEFAULT_PARAMS, FEATURE_KEYS, HandwritingClassif
 IPHONE_PARAMS = DEFAULT_PARAMS.with_name("model_parameters_iphone.json")   # train_weights.py 가 만드는 파일
 
 WINDOW = "Handwriting Check"
-CUTOUT_WINDOW = "Handwriting Cutout"
+SPLIT_MAX_WIDTH = 1800   # 2분할 화면이 이보다 넓으면 화면에 들어오게 줄임 (px)
 INK_MIN, INK_MAX = 12.0, 30.0   # 잉크 진하기 기준의 하한·상한 (화면 잡음의 5배를 이 범위로)
 PAPER_MAX_STD = 15.0   # 획 주변 밝기 표준편차가 이보다 크면 '고른 종이' 가 아님
 CONTRAST_RATIO = float("inf")   # (사용 안 함) 주변이 거친 곳의 획을 진하기로 인정하면 얼굴 머리카락도 통과해서 끔. 강판 색 펜은 채도로 잡음
@@ -231,10 +231,10 @@ def make_cutout(img: np.ndarray, clf, hand_only: bool = True, **cfg_kw):
     return to_rgba(img, mask, cfg), mask
 
 
-def idle_preview(w: int, h: int) -> np.ndarray:
-    """누끼 창 대기 화면: 손글씨로 판단되지 않아 누끼를 하지 않는 동안 보여 줌."""
+def idle_preview(w: int, h: int, text: str = "no cutout (not handwritten)") -> np.ndarray:
+    """누끼 쪽 대기 화면: 손글씨로 판단되지 않아 누끼를 하지 않는 동안(또는 첫 결과를 기다리는 동안) 보여 줌."""
     out = checkerboard_preview(np.zeros((h, w, 4), np.uint8))
-    text, font = "no cutout (not handwritten)", cv2.FONT_HERSHEY_SIMPLEX
+    font = cv2.FONT_HERSHEY_SIMPLEX
     (tw, _), _ = cv2.getTextSize(text, font, 1.0, 2)
     scale = 0.8 * w / tw                                  # 글자 폭이 창 폭의 80% 가 되도록 크게
     thick = max(2, int(round(scale * 2)))
@@ -242,6 +242,22 @@ def idle_preview(w: int, h: int) -> np.ndarray:
     org = ((w - tw) // 2, (h + th) // 2)                  # 가운데
     cv2.putText(out, text, org, font, scale, (255, 255, 255), thick + 6, cv2.LINE_AA)   # 흰 테두리 (체크무늬 위에서도 잘 보이게)
     cv2.putText(out, text, org, font, scale, (60, 60, 60), thick, cv2.LINE_AA)
+    return out
+
+
+def side_by_side(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """2분할 화면: 왼쪽 카메라 판별 화면, 오른쪽 누끼. 오른쪽은 비율을 유지해 왼쪽과 같은 크기 칸에 가운데 정렬."""
+    H, W = left.shape[:2]
+    s = min(W / right.shape[1], H / right.shape[0])
+    r = cv2.resize(right, (max(1, int(right.shape[1] * s)), max(1, int(right.shape[0] * s))), interpolation=cv2.INTER_AREA)
+    panel = np.full((H, W, 3), 40, np.uint8)
+    y0, x0 = (H - r.shape[0]) // 2, (W - r.shape[1]) // 2
+    panel[y0:y0 + r.shape[0], x0:x0 + r.shape[1]] = r
+    cv2.putText(panel, "CUTOUT  [m] close", (12, H - 34), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    out = np.hstack([left, np.full((H, 6, 3), 255, np.uint8), panel])   # 가운데 흰 구분선
+    if out.shape[1] > SPLIT_MAX_WIDTH:                                  # 노트북 화면에 들어오게 줄임
+        k = SPLIT_MAX_WIDTH / out.shape[1]
+        out = cv2.resize(out, (SPLIT_MAX_WIDTH, int(out.shape[0] * k)), interpolation=cv2.INTER_AREA)
     return out
 
 
@@ -315,7 +331,7 @@ def main(argv=None) -> int:
     print(f"카메라 #{args.device} 시작. 박스 안에 비춘 것이 손글씨면 화면에 1 이 뜹니다.")
     print("단축키 (카메라 창을 클릭한 상태에서 입력):\n"
           "  q / ESC : 종료\n"
-          "  m       : 글씨 누끼 미리보기 켜기/끄기 (종이는 체크무늬=투명, 1 이 떴을 때만 누끼)\n"
+          "  m       : 2분할 화면 켜기/끄기 (왼쪽 카메라, 오른쪽 글씨 누끼. 1 이 떴을 때만 누끼)\n"
           "  a       : 누끼 대상 전환: 손글씨만 <-> 모든 글씨(인쇄 포함)\n"
           "  s       : 저장 (frame, view, result.json, 1 이 떴을 때만 cutout.png)\n"
           "  d       : 판정 정보(확률·특징값) 보기/숨기기\n"
@@ -344,16 +360,18 @@ def main(argv=None) -> int:
             history.append(hw)
             show_one = sum(history) > len(history) / 2          # 최근 프레임 과반이 손글씨일 때만
             view = draw(frame, roi, show_one, d, debug, reason)
-            cv2.imshow(WINDOW, view)
-            if show_cutout:                                       # 켰을 때만. 계산은 스레드가 하고 여기서는 기다리지 않음
+            if show_cutout:                                       # m: 한 창을 좌우 2분할 (왼쪽 카메라, 오른쪽 누끼)
                 if show_one:                                      # 손글씨로 판단해 1 이 떠 있을 때만 누끼 계산
-                    worker.submit(frame[y:y + h, x:x + w].copy(), hand_only)
+                    worker.submit(frame[y:y + h, x:x + w].copy(), hand_only)   # 계산은 스레드가 하고 여기서는 기다리지 않음
                     preview = worker.latest()
+                    if preview is None:                           # 첫 결과가 나오기 전 (0.2~0.3초)
+                        preview = idle_preview(w, h, "making cutout...")
                 else:                                             # 손글씨가 아니면 누끼를 하지 않음 (옛 결과도 지움)
                     worker.reset()
                     preview = idle_preview(w, h)
-                if preview is not None:
-                    cv2.imshow(CUTOUT_WINDOW, preview)
+                cv2.imshow(WINDOW, side_by_side(view, preview))
+            else:
+                cv2.imshow(WINDOW, view)
 
             key = read_key(1)                                    # 한글 입력 상태여도 동작
             if key in ("q", "esc"):
@@ -363,8 +381,6 @@ def main(argv=None) -> int:
             elif key == "m":
                 show_cutout = not show_cutout
                 worker.reset()
-                if not show_cutout:
-                    cv2.destroyWindow(CUTOUT_WINDOW)
             elif key == "a":
                 hand_only = not hand_only
                 worker.reset()                                   # 옛 모드로 계산한 결과가 잠깐 보이지 않게
