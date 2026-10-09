@@ -31,7 +31,11 @@ IPHONE_PARAMS = DEFAULT_PARAMS.with_name("model_parameters_iphone.json")   # tra
 
 WINDOW = "Handwriting Check"
 INK_MIN, INK_MAX = 12.0, 30.0   # 잉크 진하기 기준의 하한·상한 (화면 잡음의 5배를 이 범위로)
-PAPER_MAX_STD = 15.0   # 획 주변 밝기 표준편차가 이보다 크면 종이 위 글씨가 아님
+PAPER_MAX_STD = 15.0   # 획 주변 밝기 표준편차가 이보다 크면 '고른 종이' 가 아님
+CONTRAST_RATIO = float("inf")   # (사용 안 함) 주변이 거친 곳의 획을 진하기로 인정하면 얼굴 머리카락도 통과해서 끔. 강판 색 펜은 채도로 잡음
+MAX_PIECES = 30        # 글씨 조각이 이보다 많으면 글씨가 아님 (장면의 잡다한 선). iPhone 손글씨는 최대 19
+STRAIGHT_RATIO = 0.08  # 곧은 직선 조각 비율이 이 이상이면 글씨가 아님. 장면 10~19%, 손글씨 0~5% (측정값)
+SPECK_RATIO = 0.05     # 가장 큰 획 면적의 이 비율보다 작은 조각은 표면 결·먼지로 보고 버림
 REASON_EN = {"글씨 없음": "no writing", "글씨 아님": "not writing"}   # 화면 표시용 (OpenCV 는 한글 불가)
 
 
@@ -61,25 +65,32 @@ def has_ink(gray: np.ndarray) -> bool:
 
 
 def ink_strength(img: np.ndarray, polarity: str = "dark") -> np.ndarray:
-    """픽셀마다 '주변 종이보다 얼마나 진한가' (0~255).
+    """픽셀마다 '주변 바탕보다 얼마나 잉크 같은가' (0~255). 아래 두 값 중 큰 값.
 
-    컬러 영상이면 B·G·R 채널마다 따로 재서 가장 큰 값을 씁니다.
-    흑백으로 바꾸면 노란 펜은 흰 종이와 밝기가 거의 같아 사라지지만, 파랑 채널에서는 확실히 어둡습니다.
-    닫힘(15px) 연산으로 가는 획을 지운 이미지를 '종이 밝기' 로 보고, 종이 - 픽셀 = 진하기.
+    1. 어두운 정도: B·G·R 채널마다 '주변 바탕 - 픽셀' 을 재서 최댓값
+       (닫힘 15px 로 가는 획을 지운 이미지 = 바탕). 검은 펜·연필·노란 펜(파랑 채널) 담당
+    2. 색의 진한 정도(채도): '픽셀 채도 - 주변 바탕 채도'. 파랑·빨강 같은 색 펜 담당
+       종이·강판·콘크리트처럼 바탕이 무채색이면 색 펜 글씨만 깨끗하게 드러남.
+       어두운 정도만 쓰면 강판 표면의 결·점이 잉크로 섞이고 굵은 마커 획은 조각나서 글씨로 인정되지 않았음
     """
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     chans = cv2.split(img) if img.ndim == 3 else [img]
     out = None
     for c in chans:
-        if polarity == "dark":           # 밝은 종이에 어두운 잉크
+        if polarity == "dark":           # 밝은 바탕에 어두운 잉크
             d = cv2.morphologyEx(c, cv2.MORPH_CLOSE, k).astype(np.int16) - c
         else:                            # 어두운 바탕에 밝은 글씨
             d = c.astype(np.int16) - cv2.morphologyEx(c, cv2.MORPH_OPEN, k)
         out = d if out is None else np.maximum(out, d)
+    if img.ndim == 3 and polarity == "dark":
+        sat = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[..., 1]
+        k_big = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))   # 굵은 마커 획도 지울 만큼 큰 창
+        sat_bg = cv2.morphologyEx(sat, cv2.MORPH_OPEN, k_big)            # 열림: 가는 고채도 획을 지운 바탕 채도
+        out = np.maximum(out, sat.astype(np.int16) - sat_bg)
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def find_writing(img: np.ndarray, polarity: str = "dark"):
+def _find_writing_one(img: np.ndarray, polarity: str):
     """카메라 화면에서 '종이 위에 쓴 글씨' 가 있는지 확인하고, 있으면 글씨 부분만 잘라 돌려줍니다.
 
     손글씨 판별 모델은 '정형 글자 vs 손글씨' 만 배웠고 '글씨 없음' 은 모릅니다 (bias 가 커서 애매하면 손글씨 쪽).
@@ -122,28 +133,47 @@ def find_writing(img: np.ndarray, polarity: str = "dark"):
         x0, y0, x1, y1 = max(0, x - 6), max(0, y - 6), min(W, x + w + 6), min(H, y + h + 6)
         comp = (lab[y0:y1, x0:x1] == i).astype(np.uint8)
         ring = (cv2.dilate(comp, ring_k) > 0) & ~ink_grown[y0:y1, x0:x1]
-        if ring.sum() >= 20 and g[y0:y1, x0:x1][ring].std() > PAPER_MAX_STD:
-            continue
+        if ring.sum() >= 20:
+            rough = float(g[y0:y1, x0:x1][ring].std())
+            strength = float(diff[y0:y1, x0:x1][comp > 0].mean())
+            # 주변이 거칠어도(강판 결·녹) 획이 주변 거칠기보다 훨씬 진하면 글씨로 인정.
+            # 머리카락·눈은 주변보다 약간 진한 정도라 여기서 걸러짐
+            if rough > PAPER_MAX_STD and strength < CONTRAST_RATIO * rough:
+                continue
         keep[i] = True
+    # 가장 큰 획에 비해 아주 작은 조각(표면 결의 점, 먼지)은 버림
+    if keep.any():
+        big = st[keep, 4].max()
+        keep &= st[:, 4] >= SPECK_RATIO * big
     m = keep[lab]
     area = int(m.sum())
     if area < 0.001 * H * W:
-        return None, "글씨 없음 (잉크가 너무 적음)"
+        return None, "글씨 없음 (잉크가 너무 적음)", 0.0
     if area > 0.15 * H * W:
-        return None, "글씨 아님 (어두운 부분이 너무 많음)"
+        return None, "글씨 아님 (어두운 부분이 너무 많음)", 0.0
     if border_area > 2.0 * area:
-        return None, "글씨 아님 (박스 밖까지 이어진 선이 많음)"
-    if keep.sum() > 40:
-        return None, "글씨 아님 (조각이 너무 많음)"
+        return None, "글씨 아님 (박스 밖까지 이어진 선이 많음)", 0.0
+    if keep.sum() > MAX_PIECES:
+        return None, "글씨 아님 (조각이 너무 많음)", 0.0
+    # 곧은 직선 조각(창틀·난간·모서리·긁힘)이 많으면 글씨가 아님.
+    # 손글씨 획은 휘어 있어 조각의 '두께/길이' 비(주성분 표준편차 비)가 크고, 직선은 0 에 가까움
+    if keep.sum() >= 5:
+        straight = 0
+        for i in np.nonzero(keep)[0]:
+            yy, xx = np.nonzero(lab == i)
+            ev = np.sort(np.linalg.eigvalsh(np.cov(np.vstack([xx, yy]))))
+            straight += np.sqrt(ev[0] / max(ev[1], 1e-6)) < 0.12
+        if straight / keep.sum() >= STRAIGHT_RATIO:
+            return None, "글씨 아님 (곧은 직선이 많음)", 0.0
 
     dist = cv2.distanceTransform(m.astype(np.uint8), cv2.DIST_L2, 3)
     sk = _thin(m)
     width = 2 * float(np.median(dist[sk])) if sk.any() else 0.0
     likeness = sk.sum() * max(width, 1.0) / area     # 획이면 1 근처, 덩어리면 작음
     if width > 0.10 * H:
-        return None, f"글씨 아님 (획이 너무 굵음 {width:.0f}px)"
+        return None, f"글씨 아님 (획이 너무 굵음 {width:.0f}px)", 0.0
     if not 0.5 <= likeness <= 2.0:
-        return None, f"글씨 아님 (획 모양이 아님 {likeness:.2f})"
+        return None, f"글씨 아님 (획 모양이 아님 {likeness:.2f})", 0.0
 
     ys, xs = np.nonzero(m)
     pad = int(0.1 * (ys.max() - ys.min() + 1)) + 4
@@ -151,7 +181,26 @@ def find_writing(img: np.ndarray, polarity: str = "dark"):
     x0, x1 = max(0, xs.min() - pad), min(W, xs.max() + 1 + pad)
     hi = float(np.percentile(diff[m], 90)) if area else 255.0
     norm = 255 - np.clip(diff.astype(np.float32) * (200.0 / max(hi, 1.0)), 0, 255)   # 종이 255, 진한 잉크 ≈ 55
-    return norm.astype(np.uint8)[y0:y1, x0:x1], "글씨 있음"
+    clarity = float(np.median(diff[m])) / thr          # 잉크가 기준보다 얼마나 뚜렷한지
+    return norm.astype(np.uint8)[y0:y1, x0:x1], "글씨 있음", clarity
+
+
+def find_writing(img: np.ndarray, polarity: str = "auto"):
+    """종이·강판 위 글씨 찾기. polarity="auto" 면 두 방향을 모두 시도합니다.
+      dark : 밝은 바탕에 어두운(또는 색이 진한) 글씨 — 종이에 펜·연필
+      light: 어두운 바탕에 밝은 글씨 — 강판에 흰색 페인트 마커
+    둘 다 통과하면 잉크가 바탕과 더 뚜렷하게 구분되는 쪽을 씁니다.
+    판정용 이미지는 어느 쪽이든 '흰 바탕 + 진한 글씨' 로 맞춰져 나옵니다."""
+    if polarity != "auto":
+        crop, reason, _ = _find_writing_one(img, polarity)
+        return crop, reason
+    dark = _find_writing_one(img, "dark")
+    light = _find_writing_one(img, "light")
+    passed = [r for r in (dark, light) if r[0] is not None]
+    if not passed:
+        return None, dark[1]
+    best = max(passed, key=lambda r: r[2])
+    return best[0], best[1] + (" (밝은 글씨)" if best is light else "")
 
 
 def _thin(m: np.ndarray) -> np.ndarray:
