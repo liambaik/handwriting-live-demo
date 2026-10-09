@@ -5,7 +5,7 @@
   - 숫자 키: 1 = 손글씨, 2 = 인쇄 글자   (한/영 상태와 상관없이 동작)
   - 영문 키: h = 손글씨, p = 인쇄 글자   (한글 입력 상태여도 동작하도록 처리)
 그 밖의 키
-  u : 마지막 저장 취소      r : 화면 90° 회전 (휴대폰을 세워 글씨가 옆으로 보일 때)
+  u : 마지막 저장 취소
   q / ESC : 종료
 
 팁
@@ -22,7 +22,7 @@ from pathlib import Path
 import cv2
 
 from check import find_writing
-from hw_demo.camera import Camera, load_rotation, save_rotation
+from hw_demo.camera import Camera
 from hw_demo.keys import read_key
 
 DATA = Path(__file__).resolve().parent / "data" / "iphone"
@@ -38,19 +38,19 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="손글씨/인쇄 글자 학습 사진 모으기")
     ap.add_argument("--device", type=int, default=0, help="카메라 번호 (이 Mac: 0 iPhone, 1 내장 웹캠)")
     ap.add_argument("--roi", type=float, nargs=2, default=[0.6, 0.45], metavar=("W", "H"))
-    ap.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=None,
-                    help="화면 회전 각도 (생략하면 지난번에 r 로 맞춘 각도)")
+    ap.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=0,
+                    help="화면을 강제로 돌릴 각도 (기본 0: 회전 보정 없음)")
     args = ap.parse_args(argv)
     for c in ("handwritten", "printed"):
         (DATA / c).mkdir(parents=True, exist_ok=True)
 
-    cam = Camera(args.device, rotate=load_rotation() if args.rotate is None else args.rotate)
+    cam = Camera(args.device, rotate=args.rotate)   # 기본 회전 보정 없음: 카메라를 돌리는 대로 화면도 돌아감
     try:
         cam.open()
     except RuntimeError as e:
         print(f"[오류] {e}", file=sys.stderr)
         return 1
-    print(f"저장 위치: {DATA}\n  버튼 클릭 또는 1/h = 손글씨, 2/p = 인쇄, u = 취소, r = 회전, q = 종료", flush=True)
+    print(f"저장 위치: {DATA}\n  버튼 클릭 또는 1/h = 손글씨, 2/p = 인쇄, u = 취소, q = 종료", flush=True)
 
     state = {"click": None, "width": 1}
     cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
@@ -79,7 +79,7 @@ def main(argv=None) -> int:
             cv2.rectangle(view, (x, y), (x + w, y + h), (0, 200, 0) if ok else (0, 0, 255), 3)
             n_h, n_p = count("handwritten"), count("printed")
             cv2.rectangle(view, (0, 0), (W, 44), (0, 0, 0), -1)
-            cv2.putText(view, f"handwritten {n_h}   printed {n_p}   rotate {cam.rotate}" + ("" if ok else "   (no writing found)"),
+            cv2.putText(view, f"handwritten {n_h}   printed {n_p}" + ("" if ok else "   (no writing found)"),
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
             # 버튼 2개
             for i, (label, color) in enumerate((("HANDWRITTEN  [1 / h]", (60, 120, 60)), ("PRINTED  [2 / p]", (120, 80, 40)))):
@@ -107,9 +107,6 @@ def main(argv=None) -> int:
                 last.unlink()
                 print(f"취소: {last.name}", flush=True)
                 flash, last = ("UNDO", datetime.now().timestamp()), None
-            elif key == "r":
-                save_rotation(cam.turn())
-                print(f"화면 회전: {cam.rotate}°", flush=True)
             if target:
                 path = DATA / target / f"{target}_{datetime.now():%Y%m%d_%H%M%S_%f}.png"
                 cv2.imwrite(str(path), roi)

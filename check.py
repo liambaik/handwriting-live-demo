@@ -14,7 +14,8 @@
 단축키: q/ESC 종료, d 판정 정보(확률·특징값) 보기/숨기기, s 현재 화면 저장(+ 글씨 누끼 cutout.png),
         m 전체 화면 2분할 켜기/끄기 (카메라 | 글씨 누끼 - 종이는 투명),
         s 누끼 사진 저장 (captures/cutout_시간.png, 1 이 떴을 때만),
-        a 누끼 대상 전환(손글씨만 <-> 인쇄 포함), r 화면 90° 회전
+        a 누끼 대상 전환(손글씨만 <-> 인쇄 포함)
+(회전 보정 없음: 카메라를 돌리는 대로 화면도 돌아갑니다)
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ import numpy as np
 
 from hw_demo.cutout import (CutoutConfig, LatestWorker, checkerboard_preview, cutout, handwritten_only, save_png,
                             to_rgba)
-from hw_demo.camera import Camera, load_rotation, save_rotation
+from hw_demo.camera import Camera
 from hw_demo.keys import read_key
 from hw_demo.hw_features import DEFAULT_PARAMS, FEATURE_KEYS, HandwritingClassifier
 
@@ -401,7 +402,7 @@ def main(argv=None) -> int:
                   file=sys.stderr)
         return 0
 
-    cam = Camera(args.device, rotate=load_rotation())   # collect.py 에서 r 로 맞춘 회전 각도를 그대로 사용
+    cam = Camera(args.device)   # 회전 보정 없음: 카메라를 돌리는 대로 화면도 돌아감
     try:
         cam.open()
     except RuntimeError as e:
@@ -413,8 +414,7 @@ def main(argv=None) -> int:
           "  m       : 전체 화면 2분할 켜기/끄기 (카메라 | 글씨 누끼. 1 이 떴을 때만 누끼)\n"
           "  a       : 누끼 대상 전환: 손글씨만 <-> 모든 글씨(인쇄 포함)\n"
           "  s       : 누끼 사진 저장 → captures/cutout_시간.png (투명 배경, 1 이 떴을 때만)\n"
-          "  d       : 판정 정보(확률·특징값) 보기/숨기기\n"
-          "  r       : 화면 90° 회전")
+          "  d       : 판정 정보(확률·특징값) 보기/숨기기")
 
     history = deque(maxlen=args.smooth)
     debug, misses, show_cutout, hand_only = False, 0, False, not args.cutout_all
@@ -481,9 +481,6 @@ def main(argv=None) -> int:
                 hand_only = not hand_only
                 worker.reset()                                   # 옛 모드로 계산한 결과가 잠깐 보이지 않게
                 print("누끼: " + ("손글씨만 (인쇄 제외)" if hand_only else "모든 글씨 (인쇄 포함)"))
-            elif key == "r":
-                save_rotation(cam.turn())
-                print(f"화면 회전: {cam.rotate}°")
             elif key == "s":
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 dd = Path(args.output) / ("check_" + stamp)
