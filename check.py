@@ -277,7 +277,13 @@ def main(argv=None) -> int:
     except RuntimeError as e:
         print(f"[오류] {e}", file=sys.stderr)
         return 1
-    print(f"카메라 #{args.device} 시작. 박스 안에 비춘 것이 손글씨면 화면에 1 이 뜹니다. (d: 판정 정보, q: 종료)")
+    print(f"카메라 #{args.device} 시작. 박스 안에 비춘 것이 손글씨면 화면에 1 이 뜹니다.")
+    print("단축키 (카메라 창을 클릭한 상태에서 입력):\n"
+          "  q / ESC : 종료\n"
+          "  m       : 글씨 누끼 미리보기 켜기/끄기 (종이는 체크무늬=투명)\n"
+          "  s       : 저장 (frame, view, cutout.png, result.json)\n"
+          "  d       : 판정 정보(확률·특징값) 보기/숨기기\n"
+          "  r       : 화면 90° 회전")
 
     history = deque(maxlen=args.smooth)
     debug, misses, show_cutout = False, 0, False
