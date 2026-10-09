@@ -36,6 +36,9 @@ class CutoutConfig:
     min_area_px: int = 12
     noise_k: float = 5.0
     min_response: float = 10.0
+    strong_pct: float = 98.0        # '확실한 잉크' 기준: 잡음 위 응답의 이 백분위수
+    rel_thr: float = 0.4            # 픽셀은 확실한 잉크 응답의 이 비율 이상이어야 획 (표면 요철·흐린 얼룩은 응답이 약함)
+    core_frac: float = 0.6          # 성분은 응답 상위 10% 가 확실한 잉크의 이 비율 이상이어야 유지 (약한 덩어리 통째로 제거)
     long_frac: float = 0.40         # 변이 화면의 이 비율을 넘고 종횡비 ≥ long_aspect 면 긴 선
     long_aspect: float = 4.0
     drop_border: bool = True        # 가이드 박스 테두리에 닿은 성분 제외 (박스에서 잘린 글씨·물체 모서리)
@@ -78,6 +81,9 @@ def stroke_mask(img: np.ndarray, cfg: CutoutConfig = CutoutConfig()) -> Dict[str
     med = float(np.median(resp))
     mad = float(np.median(np.abs(resp - med)))
     thr = max(cfg.min_response, med + cfg.noise_k * 1.4826 * mad)
+    cand = resp > thr
+    strong = float(np.percentile(resp[cand], cfg.strong_pct)) if cand.any() else 0.0
+    thr = max(thr, cfg.rel_thr * strong)                  # 상대 기준: 확실한 잉크보다 한참 약한 것(표면 요철)은 버림
     raw = (resp > thr).astype(np.uint8)
 
     H, W = raw.shape
@@ -95,7 +101,10 @@ def stroke_mask(img: np.ndarray, cfg: CutoutConfig = CutoutConfig()) -> Dict[str
             continue
         if cfg.drop_long and (w > cfg.long_frac * W or h > cfg.long_frac * H) and max(w, h) / max(1, min(w, h)) >= cfg.long_aspect:
             continue
-        crop = np.pad(lab[y:y + h, x:x + w] == i, 1)       # 바깥에 배경 1px: 없으면 거리 변환이 무한대가 됨
+        sel = lab[y:y + h, x:x + w] == i
+        if strong > 0 and float(np.percentile(resp[y:y + h, x:x + w][sel], 90)) < cfg.core_frac * strong:
+            continue                                      # 응답이 전체적으로 약한 성분 = 요철·흐린 얼룩
+        crop = np.pad(sel, 1)       # 바깥에 배경 1px: 없으면 거리 변환이 무한대가 됨
         sk = skeleton(crop)
         dt = cv2.distanceTransform(crop.astype(np.uint8), cv2.DIST_L2, 3)
         width = 2.0 * float(np.median(dt[sk])) if sk.any() else 2.0 * float(dt.max())

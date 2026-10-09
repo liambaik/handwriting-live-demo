@@ -190,3 +190,28 @@ def test_worker_reset_discards_in_flight_result_and_survives_errors():
     w.submit(7)
     assert _wait_for(lambda: w.latest() == 7)
     w.stop()
+
+
+# --- 표면 요철·흐린 얼룩 제거 ---------------------------------------------------------
+def _rough_pipe_with_pen(seed=0):
+    """울퉁불퉁한 회색 철판(저대비 얼룩 다수) 위에 진한 펜 글씨. (이미지, 글씨 정답 마스크)"""
+    rng = np.random.default_rng(seed)
+    noise = cv2.GaussianBlur(rng.normal(0, 1, (260, 700)).astype(np.float32), (0, 0), 3)
+    patches = cv2.GaussianBlur((noise > 0.9 * noise.std()).astype(np.float32), (0, 0), 1.2)   # 산화·긁힘 얼룩: 가장자리가 뚜렷한 어두운 패치
+    fine = cv2.GaussianBlur(rng.normal(0, 1, (260, 700)).astype(np.float32), (0, 0), 1.2)
+    img = np.clip(135 - 32 * patches + 5 * fine, 0, 255).astype(np.uint8)
+    truth = np.zeros(img.shape, np.uint8)
+    cv2.putText(truth, "HK357", (120, 170), cv2.FONT_HERSHEY_SIMPLEX, 3.0, 255, 7, cv2.LINE_AA)
+    truth = truth > 127
+    img[truth] = 25                                                      # 확실히 진한 펜
+    return img, truth
+
+
+def test_surface_texture_is_not_cut_out_but_pen_is():
+    img, truth = _rough_pipe_with_pen()
+    relative = stroke_mask(img)["mask"]
+    absolute = stroke_mask(img, CutoutConfig(rel_thr=0.0, core_frac=0.0))["mask"]
+    near = cv2.dilate(truth.astype(np.uint8), np.ones((15, 15), np.uint8)).astype(bool)
+    assert (relative & truth).sum() / truth.sum() > 0.7                  # 글씨는 남음
+    assert (relative & ~near).sum() < 0.3 * (absolute & ~near).sum() or (relative & ~near).sum() < 50   # 요철 오검출 대폭 감소
+    assert _iou(relative, truth) > _iou(absolute, truth)
