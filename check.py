@@ -12,7 +12,8 @@
 누끼(cutout)는 손글씨로 판단해 1 이 떴을 때만 실행합니다. 손글씨가 아니면 누끼를 계산·저장하지 않습니다.
 
 단축키: q/ESC 종료, d 판정 정보(확률·특징값) 보기/숨기기, s 현재 화면 저장(+ 글씨 누끼 cutout.png),
-        m 2분할 화면 켜기/끄기 (왼쪽 카메라, 오른쪽 글씨 누끼 - 종이는 투명),
+        m 전체 화면 2분할 켜기/끄기 (카메라 | 글씨 누끼 - 종이는 투명),
+        s 누끼 사진 저장 (captures/cutout_시간.png, 1 이 떴을 때만),
         a 누끼 대상 전환(손글씨만 <-> 인쇄 포함), r 화면 90° 회전
 """
 from __future__ import annotations
@@ -37,7 +38,6 @@ from hw_demo.hw_features import DEFAULT_PARAMS, FEATURE_KEYS, HandwritingClassif
 IPHONE_PARAMS = DEFAULT_PARAMS.with_name("model_parameters_iphone.json")   # train_weights.py 가 만드는 파일
 
 WINDOW = "Handwriting Check"
-SPLIT_MAX_WIDTH = 1800   # 2분할 화면이 이보다 넓으면 화면에 들어오게 줄임 (px)
 INK_MIN, INK_MAX = 12.0, 30.0   # 잉크 진하기 기준의 하한·상한 (화면 잡음의 5배를 이 범위로)
 PAPER_MAX_STD = 15.0   # 획 주변 밝기 표준편차가 이보다 크면 '고른 종이' 가 아님
 CONTRAST_RATIO = float("inf")   # (사용 안 함) 주변이 거친 곳의 획을 진하기로 인정하면 얼굴 머리카락도 통과해서 끔. 강판 색 펜은 채도로 잡음
@@ -245,19 +245,91 @@ def idle_preview(w: int, h: int, text: str = "no cutout (not handwritten)") -> n
     return out
 
 
-def side_by_side(left: np.ndarray, right: np.ndarray) -> np.ndarray:
-    """2분할 화면: 왼쪽 카메라 판별 화면, 오른쪽 누끼. 오른쪽은 비율을 유지해 왼쪽과 같은 크기 칸에 가운데 정렬."""
-    H, W = left.shape[:2]
-    s = min(W / right.shape[1], H / right.shape[0])
-    r = cv2.resize(right, (max(1, int(right.shape[1] * s)), max(1, int(right.shape[0] * s))), interpolation=cv2.INTER_AREA)
-    panel = np.full((H, W, 3), 40, np.uint8)
-    y0, x0 = (H - r.shape[0]) // 2, (W - r.shape[1]) // 2
-    panel[y0:y0 + r.shape[0], x0:x0 + r.shape[1]] = r
-    cv2.putText(panel, "CUTOUT  [m] close", (12, H - 34), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-    out = np.hstack([left, np.full((H, 6, 3), 255, np.uint8), panel])   # 가운데 흰 구분선
-    if out.shape[1] > SPLIT_MAX_WIDTH:                                  # 노트북 화면에 들어오게 줄임
-        k = SPLIT_MAX_WIDTH / out.shape[1]
-        out = cv2.resize(out, (SPLIT_MAX_WIDTH, int(out.shape[0] * k)), interpolation=cv2.INTER_AREA)
+def screen_size(window: str) -> tuple:
+    """전체 화면 창의 크기 (w, h). 알 수 없으면 맥북 기본 해상도로 가정."""
+    try:
+        cv2.waitKey(1)
+        _, _, w, h = cv2.getWindowImageRect(window)
+        if w >= 800 and h >= 500:
+            return w, h
+    except cv2.error:
+        pass
+    return 1728, 1117
+
+
+def _fill_camera(img: np.ndarray, w: int, h: int, roi_frac: tuple) -> np.ndarray:
+    """카메라 화면을 (w, h) 칸에 빈틈없이 채움 (넘치는 가장자리는 잘라 냄).
+    단, 가운데 가이드 박스(roi_frac: 화면 대비 가로·세로 비율)는 절대 잘리지 않게 확대 배율을 제한."""
+    H0, W0 = img.shape[:2]
+    s_cover = max(w / W0, h / H0)                                   # 칸을 빈틈없이 채우는 배율
+    s_keep = min(w / (W0 * roi_frac[0]), h / (H0 * roi_frac[1]))   # 가이드 박스가 다 보이는 최대 배율
+    s = min(s_cover, s_keep)
+    r = cv2.resize(img, (max(1, int(round(W0 * s))), max(1, int(round(H0 * s)))),
+                   interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
+    panel = np.zeros((h, w, 3), np.uint8)
+    # 가운데 기준으로 잘라 붙이기 (r 이 칸보다 크면 자르고, 작으면 가운데 정렬)
+    sy, sx = max(0, (r.shape[0] - h) // 2), max(0, (r.shape[1] - w) // 2)
+    crop = r[sy:sy + h, sx:sx + w]
+    y0, x0 = (h - crop.shape[0]) // 2, (w - crop.shape[1]) // 2
+    panel[y0:y0 + crop.shape[0], x0:x0 + crop.shape[1]] = crop
+    return panel
+
+
+def _fill_cutout(rgba: np.ndarray, w: int, h: int) -> np.ndarray:
+    """누끼를 (w, h) 칸에 글씨가 잘리지 않게 최대한 크게 넣고, 남는 곳은 투명(체크무늬)으로 채움."""
+    s = min(w / rgba.shape[1], h / rgba.shape[0])
+    r = cv2.resize(rgba, (max(1, int(rgba.shape[1] * s)), max(1, int(rgba.shape[0] * s))),
+                   interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
+    canvas = np.zeros((h, w, 4), np.uint8)
+    y0, x0 = (h - r.shape[0]) // 2, (w - r.shape[1]) // 2
+    canvas[y0:y0 + r.shape[0], x0:x0 + r.shape[1]] = r
+    return checkerboard_preview(canvas)
+
+
+def split_screen(camera: np.ndarray, cut, screen: tuple, roi_frac: tuple = (0.6, 0.45), one: bool = False) -> np.ndarray:
+    """전체 화면 2분할 (빈틈 없이). cut 은 누끼 BGRA 또는 안내 문구(str).
+    좌우와 위아래 중 두 화면이 더 크게 보이는 배치를 고릅니다 (맥북 화면에서는 보통 위아래)."""
+    W, H = screen
+    gap = 6
+    ch, cw = (cut.shape[0], cut.shape[1]) if isinstance(cut, np.ndarray) else (camera.shape[0] * roi_frac[1], camera.shape[1] * roi_frac[0])
+
+    def shown(pw, ph):   # 그 배치에서 가이드 박스 영역과 누끼가 화면에 보이는 크기의 합
+        cam = min(pw / (camera.shape[1] * roi_frac[0]), ph / (camera.shape[0] * roi_frac[1]), max(pw / camera.shape[1], ph / camera.shape[0]))
+        return cam ** 2 * camera.shape[0] * camera.shape[1] * roi_frac[0] * roi_frac[1] + min(pw / cw, ph / ch) ** 2 * cw * ch
+    side = (W - gap) // 2, H
+    stack = W, (H - gap) // 2
+    pw, ph = side if shown(*side) >= shown(*stack) else stack
+
+    def cut_panel(w, h):
+        return _fill_cutout(cut, w, h) if isinstance(cut, np.ndarray) else idle_preview(w, h, cut)
+    cam_h = H if (pw, ph) == side else ph
+    cam_panel = _fill_camera(camera, pw, cam_h, roi_frac)
+    if one:   # 확대하면서 원래 화면 맨 위의 1 이 잘리므로 카메라 칸 오른쪽 위에 다시 크게 그림
+        scale = cam_h / 160
+        thick = max(3, int(scale * 3))
+        (tw, th), _ = cv2.getTextSize("1", cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+        org = (pw - tw - int(cam_h * 0.06), th + int(cam_h * 0.06))
+        cv2.putText(cam_panel, "1", org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick + 8, cv2.LINE_AA)
+        cv2.putText(cam_panel, "1", org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 220, 0), thick, cv2.LINE_AA)
+    if (pw, ph) == side:
+        out = np.hstack([cam_panel, np.full((H, gap, 3), 255, np.uint8), cut_panel(W - gap - pw, H)])
+    else:
+        out = np.vstack([cam_panel, np.full((gap, W, 3), 255, np.uint8), cut_panel(W, H - gap - ph)])
+    cv2.putText(out, "[m] exit split   [s] save cutout", (16, H - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                (40, 40, 40), 2, cv2.LINE_AA)
+    return out
+
+
+def banner(img: np.ndarray, text: str) -> np.ndarray:
+    """화면 가운데 위쪽에 큰 안내 띠 (s 저장 결과)."""
+    out = img.copy()
+    W = out.shape[1]
+    scale = max(0.8, W / 1400)
+    thick = max(2, int(scale * 2))
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+    x0, y0 = (W - tw) // 2, int(out.shape[0] * 0.12)
+    cv2.rectangle(out, (x0 - 20, y0 - th - 20), (x0 + tw + 20, y0 + 20), (0, 0, 0), -1)
+    cv2.putText(out, text, (x0, y0), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 255, 255), thick, cv2.LINE_AA)
     return out
 
 
@@ -331,17 +403,19 @@ def main(argv=None) -> int:
     print(f"카메라 #{args.device} 시작. 박스 안에 비춘 것이 손글씨면 화면에 1 이 뜹니다.")
     print("단축키 (카메라 창을 클릭한 상태에서 입력):\n"
           "  q / ESC : 종료\n"
-          "  m       : 2분할 화면 켜기/끄기 (왼쪽 카메라, 오른쪽 글씨 누끼. 1 이 떴을 때만 누끼)\n"
+          "  m       : 전체 화면 2분할 켜기/끄기 (카메라 | 글씨 누끼. 1 이 떴을 때만 누끼)\n"
           "  a       : 누끼 대상 전환: 손글씨만 <-> 모든 글씨(인쇄 포함)\n"
-          "  s       : 저장 (frame, view, result.json, 1 이 떴을 때만 cutout.png)\n"
+          "  s       : 누끼 사진 저장 → captures/cutout_시간.png (투명 배경, 1 이 떴을 때만)\n"
           "  d       : 판정 정보(확률·특징값) 보기/숨기기\n"
           "  r       : 화면 90° 회전")
 
     history = deque(maxlen=args.smooth)
     debug, misses, show_cutout, hand_only = False, 0, False, not args.cutout_all
     # 누끼는 계산이 0.2~0.3초 걸려 메인 반복문에서 하면 카메라 화면이 끊긴다 -> 별도 스레드에서 최신 프레임만 계산
-    worker = LatestWorker(lambda img, only: checkerboard_preview(
-        make_cutout(img, clf, only, hw_threshold=args.hw_threshold)[0]))
+    worker = LatestWorker(lambda img, only: make_cutout(img, clf, only, hw_threshold=args.hw_threshold)[0])
+    last_rgba = None          # 지금 화면에 보이는 누끼 (s 로 저장할 것)
+    flash = ("", 0.0)         # 화면에 잠깐 띄울 안내 (문구, 띄운 시각)
+    screen = None             # 전체 화면 크기 (2분할을 켠 뒤 창 크기로 알아냄)
     try:
         while True:
             frame = cam.read()
@@ -360,18 +434,28 @@ def main(argv=None) -> int:
             history.append(hw)
             show_one = sum(history) > len(history) / 2          # 최근 프레임 과반이 손글씨일 때만
             view = draw(frame, roi, show_one, d, debug, reason)
-            if show_cutout:                                       # m: 한 창을 좌우 2분할 (왼쪽 카메라, 오른쪽 누끼)
-                if show_one:                                      # 손글씨로 판단해 1 이 떠 있을 때만 누끼 계산
-                    worker.submit(frame[y:y + h, x:x + w].copy(), hand_only)   # 계산은 스레드가 하고 여기서는 기다리지 않음
-                    preview = worker.latest()
-                    if preview is None:                           # 첫 결과가 나오기 전 (0.2~0.3초)
-                        preview = idle_preview(w, h, "making cutout...")
-                else:                                             # 손글씨가 아니면 누끼를 하지 않음 (옛 결과도 지움)
-                    worker.reset()
-                    preview = idle_preview(w, h)
-                cv2.imshow(WINDOW, side_by_side(view, preview))
+            last_rgba = None
+            if show_one and show_cutout:                          # 손글씨로 판단해 1 이 떠 있을 때만 누끼 계산
+                worker.submit(frame[y:y + h, x:x + w].copy(), hand_only)   # 계산은 스레드가 하고 여기서는 기다리지 않음
+                last_rgba = worker.latest()
+            elif show_cutout:                                     # 손글씨가 아니면 누끼를 하지 않음 (옛 결과도 지움)
+                worker.reset()
+            if show_cutout:                                       # m: 전체 화면 2분할 (카메라 | 누끼)
+                if last_rgba is not None:
+                    cut = last_rgba
+                elif show_one:                                    # 첫 결과가 나오기 전 (0.2~0.3초)
+                    cut = "making cutout..."
+                else:
+                    cut = "no cutout (not handwritten)"
+                if screen is None:
+                    screen = screen_size(WINDOW)
+                out = split_screen(view, cut, screen, tuple(args.roi), one=show_one)
             else:
-                cv2.imshow(WINDOW, view)
+                out = view
+            msg, t0 = flash
+            if msg and time.time() - t0 < 1.5:                    # s 를 눌렀을 때 결과 안내 (1.5초)
+                out = banner(out, msg)
+            cv2.imshow(WINDOW, out)
 
             key = read_key(1)                                    # 한글 입력 상태여도 동작
             if key in ("q", "esc"):
@@ -381,6 +465,11 @@ def main(argv=None) -> int:
             elif key == "m":
                 show_cutout = not show_cutout
                 worker.reset()
+                cv2.destroyWindow(WINDOW)                         # 창을 새로 만들어 전체 화면 ↔ 원래 크기 전환
+                if show_cutout:
+                    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+                    cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                    screen = None
             elif key == "a":
                 hand_only = not hand_only
                 worker.reset()                                   # 옛 모드로 계산한 결과가 잠깐 보이지 않게
@@ -389,12 +478,21 @@ def main(argv=None) -> int:
                 save_rotation(cam.turn())
                 print(f"화면 회전: {cam.rotate}°")
             elif key == "s":
-                dd = Path(args.output) / ("check_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                dd = Path(args.output) / ("check_" + stamp)
                 dd.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(dd / "frame.png"), frame)
                 cv2.imwrite(str(dd / "view.png"), view)
                 if show_one:                                      # 1 이 떠 있을 때만 누끼 저장
-                    save_png(dd / "cutout.png", make_cutout(frame[y:y + h, x:x + w], clf, hand_only, hw_threshold=args.hw_threshold)[0])      # 박스 안 글씨만, 배경 투명
+                    rgba = last_rgba if last_rgba is not None else \
+                        make_cutout(frame[y:y + h, x:x + w], clf, hand_only, hw_threshold=args.hw_threshold)[0]
+                    save_png(dd / "cutout.png", rgba)             # 박스 안 글씨만, 배경 투명
+                    cut_path = Path(args.output) / f"cutout_{stamp}.png"
+                    save_png(cut_path, rgba)                      # 찾기 쉽게 captures/ 바로 아래에도 저장
+                    flash = (f"SAVED  {cut_path.name}", time.time())
+                    print(f"누끼 사진 저장: {cut_path}")
+                else:
+                    flash = ("NO CUTOUT TO SAVE (not handwritten)", time.time())
                 info = {"shown": "1" if show_one else "", "this_frame_handwritten": hw, "reason": reason,
                         "cutout": "cutout.png" if show_one else "안 함 (손글씨로 판단되지 않음)",
                         "prob": None if d is None else round(d.prob, 4),
