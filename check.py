@@ -7,10 +7,11 @@
   python check.py                 # iPhone 카메라 (기본 --device 0)
   python check.py --device 1      # Mac 내장 웹캠
   python check.py --image a.png   # 사진 한 장 판정
-  python check.py --image a.png --cutout a_cutout.png   # 판정하고, 글씨만 남긴 투명 PNG 도 저장
+  python check.py --image a.png --cutout a_cutout.png   # 판정하고, 손글씨만 남긴 투명 PNG 도 저장 (인쇄 글자 제외)
 
 단축키: q/ESC 종료, d 판정 정보(확률·특징값) 보기/숨기기, s 현재 화면 저장(+ 글씨 누끼 cutout.png),
-        m 글씨 누끼(종이는 투명) 미리보기 창 켜기/끄기, r 화면 90° 회전
+        m 글씨 누끼(종이는 투명) 미리보기 창 켜기/끄기,
+        a 누끼 대상 전환(손글씨만 <-> 인쇄 포함), r 화면 90° 회전
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from hw_demo.cutout import CutoutConfig, checkerboard_preview, cutout, save_png
+from hw_demo.cutout import CutoutConfig, checkerboard_preview, cutout, handwritten_only, save_png, to_rgba
 from hw_demo.camera import Camera, load_rotation, save_rotation
 from hw_demo.keys import read_key
 from hw_demo.hw_features import DEFAULT_PARAMS, FEATURE_KEYS, HandwritingClassifier
@@ -52,6 +53,10 @@ def parse_args(argv=None):
     ap.add_argument("--params", default=None,
                     help="가중치 JSON (기본: iPhone 으로 다시 학습한 model_parameters_iphone.json 이 있으면 그것, 없으면 원래 JSON)")
     ap.add_argument("--cutout", metavar="PNG", help="--image 와 함께: 글씨 획만 남긴 투명 배경 PNG 저장 경로")
+    ap.add_argument("--cutout-all", action="store_true",
+                    help="누끼에 인쇄 글자도 포함 (기본: 손글씨로 판정된 묶음만 남김)")
+    ap.add_argument("--hw-threshold", type=float, default=0.4,
+                    help="누끼에서 묶음을 손글씨로 볼 확률 기준 (낮추면 수기를 덜 놓치고 인쇄가 섞임, 높이면 반대)")
     ap.add_argument("--smooth", type=int, default=8, help="최근 몇 프레임의 과반으로 표시할지 (깜빡임 방지)")
     ap.add_argument("--output", default="captures")
     return ap.parse_args(argv)
@@ -213,6 +218,16 @@ def _thin(m: np.ndarray) -> np.ndarray:
     return skeleton(m)
 
 
+def make_cutout(img: np.ndarray, clf, hand_only: bool = True, **cfg_kw):
+    """(BGRA 누끼, 마스크). hand_only 면 손글씨로 판정된 묶음의 획만, 아니면 모든 획(인쇄 포함)."""
+    cfg = CutoutConfig(**cfg_kw)
+    if not hand_only:
+        rgba, mask, _ = cutout(img, cfg)
+        return rgba, mask
+    mask = handwritten_only(img, clf, cfg)["mask"]
+    return to_rgba(img, mask, cfg), mask
+
+
 def judge(clf, img, live: bool = True):
     """(손글씨 여부, 판정 결과 또는 None, 이유)."""
     if live:
@@ -263,7 +278,8 @@ def main(argv=None) -> int:
         print("1" if hw else "")
         if args.cutout:
             color = cv2.imread(args.image, cv2.IMREAD_COLOR)
-            rgba, mask, _ = cutout(color, CutoutConfig(drop_border=False))   # 사진 전체: 가이드 박스가 없어 테두리 제외 안 함
+            rgba, mask = make_cutout(color, clf, not args.cutout_all, drop_border=False,   # 사진 전체: 가이드 박스 없음
+                                     hw_threshold=args.hw_threshold)
             save_png(args.cutout, rgba)
             print(f"  (누끼 저장: {args.cutout}, 글씨 픽셀 {int(mask.sum())}개)", file=sys.stderr)
         if d is not None:
@@ -281,12 +297,13 @@ def main(argv=None) -> int:
     print("단축키 (카메라 창을 클릭한 상태에서 입력):\n"
           "  q / ESC : 종료\n"
           "  m       : 글씨 누끼 미리보기 켜기/끄기 (종이는 체크무늬=투명)\n"
+          "  a       : 누끼 대상 전환: 손글씨만 <-> 모든 글씨(인쇄 포함)\n"
           "  s       : 저장 (frame, view, cutout.png, result.json)\n"
           "  d       : 판정 정보(확률·특징값) 보기/숨기기\n"
           "  r       : 화면 90° 회전")
 
     history = deque(maxlen=args.smooth)
-    debug, misses, show_cutout = False, 0, False
+    debug, misses, show_cutout, hand_only = False, 0, False, not args.cutout_all
     try:
         while True:
             frame = cam.read()
@@ -307,7 +324,7 @@ def main(argv=None) -> int:
             view = draw(frame, roi, show_one, d, debug, reason)
             cv2.imshow(WINDOW, view)
             if show_cutout:                                       # 켰을 때만 계산 (프레임마다 모폴로지 연산)
-                rgba, _, _ = cutout(frame[y:y + h, x:x + w])
+                rgba, _ = make_cutout(frame[y:y + h, x:x + w], clf, hand_only, hw_threshold=args.hw_threshold)
                 cv2.imshow(CUTOUT_WINDOW, checkerboard_preview(rgba))
 
             key = read_key(1)                                    # 한글 입력 상태여도 동작
@@ -319,6 +336,9 @@ def main(argv=None) -> int:
                 show_cutout = not show_cutout
                 if not show_cutout:
                     cv2.destroyWindow(CUTOUT_WINDOW)
+            elif key == "a":
+                hand_only = not hand_only
+                print("누끼: " + ("손글씨만 (인쇄 제외)" if hand_only else "모든 글씨 (인쇄 포함)"))
             elif key == "r":
                 save_rotation(cam.turn())
                 print(f"화면 회전: {cam.rotate}°")
@@ -327,7 +347,7 @@ def main(argv=None) -> int:
                 dd.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(dd / "frame.png"), frame)
                 cv2.imwrite(str(dd / "view.png"), view)
-                save_png(dd / "cutout.png", cutout(frame[y:y + h, x:x + w])[0])      # 박스 안 글씨만, 배경 투명
+                save_png(dd / "cutout.png", make_cutout(frame[y:y + h, x:x + w], clf, hand_only, hw_threshold=args.hw_threshold)[0])      # 박스 안 글씨만, 배경 투명
                 info = {"shown": "1" if show_one else "", "this_frame_handwritten": hw, "reason": reason,
                         "prob": None if d is None else round(d.prob, 4),
                         "features": None if d is None else {k: round(v, 4) for k, v in d.features.items()}}

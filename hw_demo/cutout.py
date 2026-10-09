@@ -18,7 +18,7 @@ hoonibbong 브랜치 PAC2/src/pac2/extraction.py 의 획 단위 후보 마스크
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, List
 
 import cv2
 import numpy as np
@@ -40,6 +40,9 @@ class CutoutConfig:
     long_aspect: float = 4.0
     drop_border: bool = True        # 가이드 박스 테두리에 닿은 성분 제외 (박스에서 잘린 글씨·물체 모서리)
     drop_long: bool = True
+    link_ratio: float = 0.8         # 수기 판별용 묶기: 상자 사이 틈이 (중앙 글자 높이 × 이 값) 이하면 한 묶음
+    hw_threshold: float = 0.4       # 묶음의 손글씨 확률이 이 이상이면 유지 (판별기 기본 0.5 보다 낮춰 수기를 덜 놓치게)
+    min_group_px: int = 40          # 이보다 잉크가 적은 묶음은 판별하지 않고 제외 (점·잔얼룩)
     feather: int = 0                # >0 이면 알파 가장자리를 이 크기(홀수 px)로 부드럽게
 
 
@@ -137,3 +140,70 @@ def save_png(path, rgba: np.ndarray) -> None:
     if not ok:
         raise ValueError("PNG 인코딩 실패")
     buf.tofile(str(path))
+
+
+# ---------------------------------------------------------------- 수기만 남기기 (인쇄 글자 제외)
+def group_strokes(mask: np.ndarray, link_ratio: float = 0.8, min_px: int = 40) -> List[dict]:
+    """획 성분을 근접 묶음(글자·단어 단위)으로 묶는다. 상자 사이 틈이 중앙 높이 × link_ratio 이하면 같은 묶음.
+    (PAC2 group_components 와 같은 방식.) 반환: [{"box": (x, y, w, h), "mask": 원 크기 bool, "pixels": n}]"""
+    n, lab, st, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    idx = [i for i in range(1, n) if st[i, cv2.CC_STAT_AREA] >= 8]
+    if not idx:
+        return []
+    gap = max(2.0, link_ratio * float(np.median([st[i, cv2.CC_STAT_HEIGHT] for i in idx])))
+    parent = {i: i for i in idx}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    box = {i: (st[i, 0], st[i, 1], st[i, 0] + st[i, 2], st[i, 1] + st[i, 3]) for i in idx}
+    for ai, a in enumerate(idx):
+        for b in idx[ai + 1:]:
+            dx = max(0, box[b][0] - box[a][2], box[a][0] - box[b][2])
+            dy = max(0, box[b][1] - box[a][3], box[a][1] - box[b][3])
+            if dx <= gap and dy <= gap:
+                parent[find(a)] = find(b)
+    groups: Dict[int, List[int]] = {}
+    for i in idx:
+        groups.setdefault(find(i), []).append(i)
+    out = []
+    for members in groups.values():
+        gm = np.isin(lab, members)
+        if gm.sum() < min_px:
+            continue
+        ys, xs = np.nonzero(gm)
+        out.append({"box": (int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)),
+                    "mask": gm, "pixels": int(gm.sum())})
+    return sorted(out, key=lambda g: (g["box"][1], g["box"][0]))
+
+
+def handwritten_only(img: np.ndarray, clf, cfg: CutoutConfig = CutoutConfig()) -> Dict[str, object]:
+    """획 마스크를 묶음별로 나눠 손글씨 판별기(clf: HandwritingClassifier)로 판정하고, 손글씨 묶음의 획만 남긴다.
+
+    묶음 하나하나를 '그 묶음만 보이게'(나머지는 배경색으로 칠함) 잘라 clf.decide 에 넣는다.
+    반환: mask(손글씨만), groups([{box, prob, keep, pixels}]), all_mask(인쇄 포함 전체 획), polarity, threshold
+    """
+    base = stroke_mask(img, cfg)
+    all_mask = base["mask"]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    bg = int(np.median(gray))
+    pad = 6
+    H, W = gray.shape
+    kept = np.zeros_like(all_mask)
+    groups = []
+    for g in group_strokes(all_mask, cfg.link_ratio, cfg.min_group_px):
+        x, y, w, h = g["box"]
+        x0, y0, x1, y1 = max(0, x - pad), max(0, y - pad), min(W, x + w + pad), min(H, y + h + pad)
+        crop = gray[y0:y1, x0:x1].copy()
+        near = cv2.dilate(g["mask"][y0:y1, x0:x1].astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+        crop[~near] = bg                                  # 다른 묶음·종이 질감 지움: 이 묶음의 획만 남김
+        d = clf.decide(crop)
+        keep = d is not None and d.prob >= cfg.hw_threshold
+        groups.append({"box": g["box"], "pixels": g["pixels"], "prob": None if d is None else d.prob, "keep": bool(keep)})
+        if keep:
+            kept |= g["mask"]
+    return {"mask": kept, "all_mask": all_mask, "groups": groups, "polarity": base["polarity"],
+            "threshold": base["threshold"]}

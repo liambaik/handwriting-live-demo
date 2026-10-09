@@ -79,3 +79,48 @@ def test_large_photo_is_downscaled_but_mask_matches_input_size():
     img, _ = _truth(size=(220, 560))
     big = cv2.resize(img, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR)
     assert stroke_mask(big)["mask"].shape == big.shape[:2]
+
+
+# --- 수기만 남기기 (인쇄 글자 제외) -------------------------------------------------
+class _FakeClf:
+    """묶음을 위에서 아래 순서로 받아 verdicts 순서대로 손글씨 확률을 돌려줌 (판별 규칙이 아니라 배선 검증용)."""
+
+    def __init__(self, verdicts):
+        self.verdicts = list(verdicts)
+
+    def decide(self, gray):
+        from types import SimpleNamespace
+        p = 0.9 if self.verdicts.pop(0) else 0.1
+        return SimpleNamespace(prob=p, is_handwritten=p >= 0.5)
+
+
+def _two_blocks():
+    img = np.full((260, 700), 225, np.uint8)
+    cv2.putText(img, "HK", (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 3.0, 40, 7, cv2.LINE_AA)       # 위쪽: 가짜 '수기'
+    cv2.putText(img, "357", (330, 230), cv2.FONT_HERSHEY_SIMPLEX, 3.0, 40, 7, cv2.LINE_AA)     # 아래 오른쪽: 가짜 '인쇄'
+    return img
+
+
+def test_group_strokes_splits_distant_text():
+    from hw_demo.cutout import group_strokes
+    m = stroke_mask(_two_blocks())["mask"]
+    groups = group_strokes(m)
+    assert len(groups) == 2
+    assert groups[0]["box"][1] < groups[1]["box"][1]
+
+
+def test_handwritten_only_keeps_only_groups_judged_handwritten():
+    from hw_demo.cutout import handwritten_only
+    img = _two_blocks()
+    r = handwritten_only(img, _FakeClf([True, False]))            # 위쪽 묶음만 '수기'
+    assert r["mask"][:130].any() and not r["mask"][130:].any()
+    assert r["all_mask"][130:].any()                              # 전체 획에는 아래 글자도 있음
+    assert [g["keep"] for g in r["groups"]] == [True, False]
+
+
+def test_all_groups_rejected_gives_empty_cutout():
+    from hw_demo.cutout import handwritten_only, to_rgba
+    img = _two_blocks()
+    r = handwritten_only(img, _FakeClf([False, False]))
+    assert not r["mask"].any()
+    assert (to_rgba(img, r["mask"])[..., 3] == 0).all()
