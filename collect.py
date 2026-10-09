@@ -38,7 +38,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="손글씨/인쇄 글자 학습 사진 모으기")
     ap.add_argument("--device", type=int, default=0, help="카메라 번호 (이 Mac: 0 iPhone, 1 내장 웹캠)")
     ap.add_argument("--roi", type=float, nargs=2, default=[0.6, 0.45], metavar=("W", "H"))
-    ap.add_argument("--rotate", type=int, default=0,
+    ap.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=0,
                     help="화면을 강제로 돌릴 각도 (기본 0: 회전 보정 없음)")
     args = ap.parse_args(argv)
     for c in ("handwritten", "printed"):
@@ -50,7 +50,7 @@ def main(argv=None) -> int:
     except RuntimeError as e:
         print(f"[오류] {e}", file=sys.stderr)
         return 1
-    print(f"저장 위치: {DATA}\n  버튼 클릭 또는 1/h = 손글씨, 2/p = 인쇄, u = 취소, r = 30° 회전, q = 종료", flush=True)
+    print(f"저장 위치: {DATA}\n  버튼 클릭 또는 1/h = 손글씨, 2/p = 인쇄, u = 취소, q = 종료", flush=True)
 
     state = {"click": None, "width": 1}
     cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
@@ -103,8 +103,6 @@ def main(argv=None) -> int:
                 target = "handwritten"
             elif key in ("p", "2"):
                 target = "printed"
-            elif key == "r":
-                print(f"화면 회전: {cam.turn(30)}°", flush=True)
             elif key == "u" and last is not None and last.exists():
                 last.unlink()
                 print(f"취소: {last.name}", flush=True)

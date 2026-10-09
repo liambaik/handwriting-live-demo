@@ -15,7 +15,7 @@
         m 전체 화면 2분할 켜기/끄기 (카메라 | 글씨 누끼 - 종이는 투명),
         s 누끼 사진 저장 (captures/cutout_시간.png, 1 이 떴을 때만),
         a 누끼 대상 전환(손글씨만 <-> 인쇄 포함)
-r 화면 30° 회전 (기본은 회전 보정 없음: 카메라를 돌리는 대로 화면도 돌아갑니다)
+(회전 보정 없음: 카메라를 돌리는 대로 화면도 돌아갑니다)
 """
 from __future__ import annotations
 
@@ -414,8 +414,7 @@ def main(argv=None) -> int:
           "  m       : 전체 화면 2분할 켜기/끄기 (카메라 | 글씨 누끼. 1 이 떴을 때만 누끼)\n"
           "  a       : 누끼 대상 전환: 손글씨만 <-> 모든 글씨(인쇄 포함)\n"
           "  s       : 누끼 사진 저장 → captures/cutout_시간.png (투명 배경, 1 이 떴을 때만)\n"
-          "  d       : 판정 정보(확률·특징값) 보기/숨기기\n"
-          "  r       : 화면 30° 회전 (시계 방향, 누를 때마다 30° 씩. 다시 켜면 0°)")
+          "  d       : 판정 정보(확률·특징값) 보기/숨기기")
 
     history = deque(maxlen=args.smooth)
     debug, misses, show_cutout, hand_only = False, 0, False, not args.cutout_all
@@ -470,8 +469,6 @@ def main(argv=None) -> int:
                 break
             elif key == "d":
                 debug = not debug
-            elif key == "r":
-                print(f"화면 회전: {cam.turn(30)}°")
             elif key == "m":
                 show_cutout = not show_cutout
                 worker.reset()
