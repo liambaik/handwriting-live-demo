@@ -43,6 +43,9 @@ class CutoutConfig:
     long_aspect: float = 4.0
     drop_border: bool = True        # 가이드 박스 테두리에 닿은 성분 제외 (박스에서 잘린 글씨·물체 모서리)
     drop_long: bool = True
+    drop_skin: bool = True          # 손가락·손 등 피부색 영역 안의 성분 제외 (컬러 영상에서만)
+    skin_min_frac: float = 0.02     # 피부색 덩어리가 화면의 이 비율 이상이어야 손으로 봄 (붉은 펜 점·벽 얼룩 같은 작은 조각 무시)
+    skin_overlap: float = 0.5       # 성분 픽셀의 이 비율 이상이 피부색 영역 안이면 제외
     link_ratio: float = 0.8         # 수기 판별용 묶기: 상자 사이 틈이 (중앙 글자 높이 × 이 값) 이하면 한 묶음
     hw_threshold: float = 0.4       # 묶음의 손글씨 확률이 이 이상이면 유지 (판별기 기본 0.5 보다 낮춰 수기를 덜 놓치게)
     min_group_px: int = 40          # 이보다 잉크가 적은 묶음은 판별하지 않고 제외 (점·잔얼룩)
@@ -70,6 +73,20 @@ def _hat_response(img: np.ndarray, op: int, kernels) -> np.ndarray:
     return resp
 
 
+def skin_region(bgr: np.ndarray, min_frac: float = 0.02, open_k: int = 15, grow: int = 9) -> np.ndarray:
+    """손가락·손 영역(bool). YCrCb 피부색 범위 → 큰 열기(획 같은 가는 것 제거) → 면적 작은 조각 제거 → 가장자리까지 넓힘.
+    손가락 가장자리의 그림자 선이 획처럼 잡히므로 영역을 grow px 키워 가장자리도 포함한다."""
+    ycc = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
+    y, cr, cb = ycc[..., 0], ycc[..., 1], ycc[..., 2]
+    m = ((cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127) & (y > 40)).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_k, open_k)))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    keep = np.zeros(n, bool)
+    keep[1:] = st[1:, cv2.CC_STAT_AREA] >= min_frac * m.size
+    m = keep[lab].astype(np.uint8)
+    return cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1))) > 0
+
+
 def stroke_mask(img: np.ndarray, cfg: CutoutConfig = CutoutConfig()) -> Dict[str, object]:
     """획 마스크. 반환: mask(bool, 입력과 같은 크기), polarity, threshold, n_rejected_blob."""
     H0, W0 = img.shape[:2]
@@ -87,6 +104,7 @@ def stroke_mask(img: np.ndarray, cfg: CutoutConfig = CutoutConfig()) -> Dict[str
     raw = (resp > thr).astype(np.uint8)
 
     H, W = raw.shape
+    skin = skin_region(work, cfg.skin_min_frac) if cfg.drop_skin and work.ndim == 3 else None
     n, lab, st, _ = cv2.connectedComponentsWithStats(raw, connectivity=8)
     keep = np.zeros(n, bool)
     rejected = 0
@@ -96,6 +114,8 @@ def stroke_mask(img: np.ndarray, cfg: CutoutConfig = CutoutConfig()) -> Dict[str
             continue
         if cfg.drop_border and (x <= 0 or y <= 0 or x + w >= W or y + h >= H):
             continue
+        if skin is not None and float(skin[y:y + h, x:x + w][lab[y:y + h, x:x + w] == i].mean()) >= cfg.skin_overlap:
+            continue                                      # 손가락 위·가장자리 성분
         if a > cfg.max_area_frac * raw.size:
             rejected += 1
             continue

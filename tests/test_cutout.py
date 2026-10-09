@@ -215,3 +215,37 @@ def test_surface_texture_is_not_cut_out_but_pen_is():
     assert (relative & truth).sum() / truth.sum() > 0.7                  # 글씨는 남음
     assert (relative & ~near).sum() < 0.3 * (absolute & ~near).sum() or (relative & ~near).sum() < 50   # 요철 오검출 대폭 감소
     assert _iou(relative, truth) > _iou(absolute, truth)
+
+
+# --- 피부색(손가락) 영역 제외 ------------------------------------------------------------
+def _hand_and_pen():
+    """흰 종이 + 파란 펜 글씨 + 오른쪽에 살색 손가락(가장자리에 어두운 그림자 선)."""
+    img = np.full((260, 700, 3), 230, np.uint8)
+    cv2.putText(img, "HK", (40, 150), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (120, 30, 20), 7, cv2.LINE_AA)    # 파란 펜 (BGR)
+    truth = np.zeros(img.shape[:2], bool)
+    truth[cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) < 120] = True
+    cv2.rectangle(img, (470, 0), (699, 259), (150, 175, 225), -1)               # 손가락 (BGR 살색)
+    cv2.line(img, (470, 90), (470, 170), (25, 30, 55), 3)                      # 손가락 가장자리 그림자
+    cv2.line(img, (520, 90), (540, 170), (25, 30, 55), 3)                      # 손가락 마디 주름
+    return img, truth
+
+
+def test_skin_region_found_and_strokes_inside_are_dropped():
+    from hw_demo.cutout import skin_region
+    img, truth = _hand_and_pen()
+    skin = skin_region(img)
+    assert skin[:, 520:690].mean() > 0.9 and not skin[:, :300].any()
+    with_skin = stroke_mask(img)["mask"]
+    without = stroke_mask(img, CutoutConfig(drop_skin=False))["mask"]
+    assert without[:, 465:].any()                       # 끄면 손가락 선이 획으로 잡힘
+    assert not with_skin[:, 465:].any()                 # 켜면 제외
+    assert (with_skin & truth).sum() / truth.sum() > 0.7  # 펜 글씨는 그대로
+
+
+def test_small_skin_toned_ink_is_not_treated_as_hand():
+    """붉은 펜 글씨(살색 범위에 걸릴 수 있음)는 면적이 작아서 손으로 취급하지 않는다."""
+    img = np.full((260, 700, 3), 235, np.uint8)
+    cv2.putText(img, "HK357", (40, 170), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (60, 90, 215), 7, cv2.LINE_AA)   # 주황빛 빨강
+    from hw_demo.cutout import skin_region
+    assert not skin_region(img).any()
+    assert stroke_mask(img)["mask"].sum() > 3000
