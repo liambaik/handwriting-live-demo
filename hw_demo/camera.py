@@ -10,7 +10,7 @@ import numpy as np
 
 class Camera:
     def __init__(self, device: int = 0, width: int = 1280, height: int = 720, rotate: int = 0):
-        """rotate: 영상을 시계 방향으로 돌릴 각도 (0/90/180/270). 휴대폰을 세워 두면 글씨가 옆으로 누워 보일 때 사용."""
+        """rotate: 영상을 시계 방향으로 돌릴 각도 (도). 0 이면 회전 없음. r 키로 30° 씩 돌림."""
         self.device, self.width, self.height = device, width, height
         self.rotate = rotate % 360
         self.cap: Optional[cv2.VideoCapture] = None
@@ -38,9 +38,9 @@ class Camera:
             return None
         return rotate_frame(frame, self.rotate)
 
-    def turn(self) -> int:
-        """시계 방향으로 90° 더 돌림. 새 각도를 돌려줌."""
-        self.rotate = (self.rotate + 90) % 360
+    def turn(self, step: int = 30) -> int:
+        """시계 방향으로 step° 더 돌림 (기본 30°). 새 각도를 돌려줌."""
+        self.rotate = (self.rotate + step) % 360
         return self.rotate
 
     def close(self) -> None:
@@ -53,7 +53,20 @@ _ROT = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COU
 
 
 def rotate_frame(frame: np.ndarray, angle: int) -> np.ndarray:
-    return cv2.rotate(frame, _ROT[angle]) if angle in _ROT else frame
+    """시계 방향으로 angle° 회전. 90° 단위는 그대로 돌리고, 그 밖의 각도(30°, 60° …)는
+    잘리는 곳이 없도록 캔버스를 넓혀서 돌림 (빈 모서리는 검정)."""
+    angle %= 360
+    if angle == 0:
+        return frame
+    if angle in _ROT:
+        return cv2.rotate(frame, _ROT[angle])
+    h, w = frame.shape[:2]
+    m = cv2.getRotationMatrix2D((w / 2, h / 2), -angle, 1.0)        # OpenCV 는 반시계가 + 라서 부호 반대
+    cos, sin = abs(m[0, 0]), abs(m[0, 1])
+    nw, nh = int(h * sin + w * cos), int(h * cos + w * sin)
+    m[0, 2] += nw / 2 - w / 2
+    m[1, 2] += nh / 2 - h / 2
+    return cv2.warpAffine(frame, m, (nw, nh), flags=cv2.INTER_LINEAR, borderValue=(0, 0, 0))
 
 
 def list_cameras(max_index: int = 4) -> list:
