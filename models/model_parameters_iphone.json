@@ -1,0 +1,107 @@
+{
+  "dataset": {
+    "handwritten": 104,
+    "formal": 22,
+    "total": 126,
+    "sources": {
+      "iphone/handwritten": 10,
+      "iphone/printed": 9,
+      "original/formal": 13,
+      "original/handwritten": 94
+    }
+  },
+  "model": "PyTorch logistic regression",
+  "loss": "balanced Binary Cross Entropy + L2 regularization",
+  "selected_lambda": 0.03,
+  "selection_rule": "10x repeated 5-fold stratified cross-validation; minimum mean balanced validation log loss",
+  "decision_threshold": 0.5,
+  "bias": 1.1663967355549962,
+  "features": [
+    {
+      "index": 1,
+      "name": "획 두께 변화",
+      "key": "stroke_width_var",
+      "median_for_missing": 0.17376183351508762,
+      "mean": 0.18975741432351573,
+      "std": 0.06850741368745492,
+      "weight": -0.07621546805808772
+    },
+    {
+      "index": 2,
+      "name": "문자 간격 편차",
+      "key": "spacing_dev",
+      "median_for_missing": 0.8412698412698413,
+      "mean": 0.7854033394277616,
+      "std": 0.5471914934507591,
+      "weight": 0.4516019558801533
+    },
+    {
+      "index": 3,
+      "name": "기울기 변화",
+      "key": "slant_var",
+      "median_for_missing": 15.1910400390625,
+      "mean": 14.893165792737689,
+      "std": 2.2244726281963083,
+      "weight": 1.120849214069189
+    },
+    {
+      "index": 4,
+      "name": "Baseline 흔들림",
+      "key": "baseline_wobble",
+      "median_for_missing": 0.24096385542168675,
+      "mean": 0.4637291790501049,
+      "std": 0.6080346210287461,
+      "weight": -0.38451896181093
+    },
+    {
+      "index": 5,
+      "name": "곡률 변화",
+      "key": "curvature_var",
+      "median_for_missing": 0.5634333698478919,
+      "mean": 0.6243009197322305,
+      "std": 0.2262056236024631,
+      "weight": -0.4657197268061534
+    },
+    {
+      "index": 6,
+      "name": "연결요소 크기 분산",
+      "key": "cc_size_var",
+      "median_for_missing": 0.48525870056406734,
+      "mean": 0.5250280059326483,
+      "std": 0.37544096736821037,
+      "weight": -0.10760346460124887
+    },
+    {
+      "index": 7,
+      "name": "외곽선 불규칙도",
+      "key": "contour_irregularity",
+      "median_for_missing": 1.6661439076136793,
+      "mean": 1.7134769527232259,
+      "std": 0.37891722931559363,
+      "weight": 0.9281946387138487
+    },
+    {
+      "index": 8,
+      "name": "획 연결성",
+      "key": "stroke_connectivity",
+      "median_for_missing": 0.3333333333333333,
+      "mean": 0.29891078996237724,
+      "std": 0.21028454455084286,
+      "weight": 0.05950169068306719
+    }
+  ],
+  "final_training_metrics": {
+    "balanced_accuracy": 0.9471153846153846,
+    "recall_handwritten": 0.8942307692307693,
+    "printed_shown_as_1": 0.0,
+    "balanced_log_loss": 0.28608799185778744
+  },
+  "cross_validation_at_selected_lambda": {
+    "balanced_accuracy": 0.9161666666666665,
+    "recall_handwritten": 0.8823333333333333,
+    "printed_shown_as_1": 0.05,
+    "balanced_log_loss": 0.37596968448348717
+  },
+  "created": "2026-10-10T04:52:00",
+  "note": "hw_demo/hw_features.py 의 특징 계산으로 iPhone 사진에서 다시 학습한 가중치"
+}
