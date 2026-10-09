@@ -7,7 +7,9 @@
   python check.py                 # iPhone 카메라 (기본 --device 0)
   python check.py --device 1      # Mac 내장 웹캠
   python check.py --image a.png   # 사진 한 장 판정
-  python check.py --image a.png --cutout a_cutout.png   # 판정하고, 손글씨만 남긴 투명 PNG 도 저장 (인쇄 글자 제외)
+  python check.py --image a.png --cutout a_cutout.png   # 판정하고, 손글씨로 판단되면 손글씨만 남긴 투명 PNG 도 저장
+
+누끼(cutout)는 손글씨로 판단해 1 이 떴을 때만 실행합니다. 손글씨가 아니면 누끼를 계산·저장하지 않습니다.
 
 단축키: q/ESC 종료, d 판정 정보(확률·특징값) 보기/숨기기, s 현재 화면 저장(+ 글씨 누끼 cutout.png),
         m 글씨 누끼(종이는 투명) 미리보기 창 켜기/끄기,
@@ -229,6 +231,13 @@ def make_cutout(img: np.ndarray, clf, hand_only: bool = True, **cfg_kw):
     return to_rgba(img, mask, cfg), mask
 
 
+def idle_preview(w: int, h: int) -> np.ndarray:
+    """누끼 창 대기 화면: 손글씨로 판단되지 않아 누끼를 하지 않는 동안 보여 줌."""
+    out = checkerboard_preview(np.zeros((h, w, 4), np.uint8))
+    cv2.putText(out, "no cutout (not handwritten)", (16, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (90, 90, 90), 2, cv2.LINE_AA)
+    return out
+
+
 def judge(clf, img, live: bool = True):
     """(손글씨 여부, 판정 결과 또는 None, 이유)."""
     if live:
@@ -277,7 +286,9 @@ def main(argv=None) -> int:
             return 1
         hw, d, reason = judge(clf, g, live=False)
         print("1" if hw else "")
-        if args.cutout:
+        if args.cutout and not hw:
+            print(f"  (누끼 안 함: 손글씨로 판단되지 않음 → {args.cutout} 저장하지 않음)", file=sys.stderr)
+        elif args.cutout:
             color = cv2.imread(args.image, cv2.IMREAD_COLOR)
             rgba, mask = make_cutout(color, clf, not args.cutout_all, drop_border=False,   # 사진 전체: 가이드 박스 없음
                                      hw_threshold=args.hw_threshold)
@@ -297,9 +308,9 @@ def main(argv=None) -> int:
     print(f"카메라 #{args.device} 시작. 박스 안에 비춘 것이 손글씨면 화면에 1 이 뜹니다.")
     print("단축키 (카메라 창을 클릭한 상태에서 입력):\n"
           "  q / ESC : 종료\n"
-          "  m       : 글씨 누끼 미리보기 켜기/끄기 (종이는 체크무늬=투명)\n"
+          "  m       : 글씨 누끼 미리보기 켜기/끄기 (종이는 체크무늬=투명, 1 이 떴을 때만 누끼)\n"
           "  a       : 누끼 대상 전환: 손글씨만 <-> 모든 글씨(인쇄 포함)\n"
-          "  s       : 저장 (frame, view, cutout.png, result.json)\n"
+          "  s       : 저장 (frame, view, result.json, 1 이 떴을 때만 cutout.png)\n"
           "  d       : 판정 정보(확률·특징값) 보기/숨기기\n"
           "  r       : 화면 90° 회전")
 
@@ -328,8 +339,12 @@ def main(argv=None) -> int:
             view = draw(frame, roi, show_one, d, debug, reason)
             cv2.imshow(WINDOW, view)
             if show_cutout:                                       # 켰을 때만. 계산은 스레드가 하고 여기서는 기다리지 않음
-                worker.submit(frame[y:y + h, x:x + w].copy(), hand_only)
-                preview = worker.latest()
+                if show_one:                                      # 손글씨로 판단해 1 이 떠 있을 때만 누끼 계산
+                    worker.submit(frame[y:y + h, x:x + w].copy(), hand_only)
+                    preview = worker.latest()
+                else:                                             # 손글씨가 아니면 누끼를 하지 않음 (옛 결과도 지움)
+                    worker.reset()
+                    preview = idle_preview(w, h)
                 if preview is not None:
                     cv2.imshow(CUTOUT_WINDOW, preview)
 
@@ -355,8 +370,10 @@ def main(argv=None) -> int:
                 dd.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(dd / "frame.png"), frame)
                 cv2.imwrite(str(dd / "view.png"), view)
-                save_png(dd / "cutout.png", make_cutout(frame[y:y + h, x:x + w], clf, hand_only, hw_threshold=args.hw_threshold)[0])      # 박스 안 글씨만, 배경 투명
+                if show_one:                                      # 1 이 떠 있을 때만 누끼 저장
+                    save_png(dd / "cutout.png", make_cutout(frame[y:y + h, x:x + w], clf, hand_only, hw_threshold=args.hw_threshold)[0])      # 박스 안 글씨만, 배경 투명
                 info = {"shown": "1" if show_one else "", "this_frame_handwritten": hw, "reason": reason,
+                        "cutout": "cutout.png" if show_one else "안 함 (손글씨로 판단되지 않음)",
                         "prob": None if d is None else round(d.prob, 4),
                         "features": None if d is None else {k: round(v, 4) for k, v in d.features.items()}}
                 (dd / "result.json").write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
