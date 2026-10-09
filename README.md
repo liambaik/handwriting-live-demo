@@ -7,14 +7,33 @@
 
 ## 1. 설치 (처음 한 번)
 
-torch를 쓰기 때문에 **Python 3.10 이상**이 필요합니다.
+**Python 3.9 이상**이 필요합니다. macOS 기본 Python 3.9에서도 동작합니다. 3.9에서는 torch 2.8이 설치됩니다.
+
+| | macOS / Linux | Windows |
+|---|---|---|
+| 설치 | `./setup.sh` | `setup.bat` |
+| 손글씨 판별 화면 | `./run_check.sh` | `run_check.bat` |
+| 글자 읽기 화면 | `./run.sh` | `run.bat` |
+| 사진 모으기 / 재학습 | `./run_collect.sh` / `./run_train.sh` | `run_collect.bat` / `run_train.bat` |
+
+- `setup.sh`는 설치된 Python 중 가장 새 버전(3.13 → 3.9 순)을 자동으로 고릅니다. 직접 정하려면 `PYTHON=/경로/python3 ./setup.sh`로 실행합니다.
+- 검증한 버전은 `requirements-lock.txt`에 있습니다 (Python 3.12, torch 2.14.1). Python 3.9 + torch 2.8.0에서도 테스트 11개가 통과했습니다.
+
+### 다른 컴퓨터에서 실행하기
 
 ```bash
-./setup.sh                                     # 기본 python3 사용
-PYTHON=/opt/anaconda3/bin/python ./setup.sh    # 다른 Python 지정
+git clone https://github.com/liambaik/handwriting-live-demo.git
+cd handwriting-live-demo
+./setup.sh                      # Windows: setup.bat
+./run.sh --list-cameras         # 카메라 번호 확인 (Windows: run.bat --list-cameras)
+./run_check.sh --device 번호    # Windows: run_check.bat --device 번호
 ```
 
-검증에 사용한 버전은 `requirements-lock.txt`에 있습니다 (Python 3.12, torch 2.14.1, torchvision 0.29.1, opencv-python 5.0.0.93).
+- **카메라 번호는 컴퓨터마다 다릅니다.** 기본값 `--device 0`은 이 프로젝트를 만든 Mac에서 iPhone이었던 번호입니다. 다른 컴퓨터에서는 `--list-cameras`로 확인한 번호를 넣으세요. 노트북 내장 카메라만 있으면 보통 0입니다.
+- **macOS 카메라 권한:** **시스템 설정 > 개인정보 보호 및 보안 > 카메라**에서 터미널(또는 VS Code)을 켜고, 그 앱을 완전히 종료(⌘Q)했다가 다시 엽니다.
+- **화면이 옆으로 누우면** 창에서 `r`을 누르세요. 회전 설정(`settings.json`)은 컴퓨터마다 따로 저장되고 git에는 올라가지 않습니다.
+- **판정 가중치:** 모델과 가중치 파일(`models/`)은 저장소에 포함되어 있어 따로 받을 필요가 없습니다. iPhone으로 다시 학습한 가중치(`model_parameters_iphone.json`)가 자동으로 쓰입니다.
+- 학습에 쓴 iPhone 사진(`data/`)은 저장소에 없습니다. 그 컴퓨터에서 다시 학습하려면 `run_collect`로 사진부터 모아야 합니다.
 
 ## 2. 실행
 
@@ -109,7 +128,7 @@ handwriting-live-demo/
 ├── models/model_parameters.json  손글씨 판별 가중치 (Downloads 에서 복사)
 ├── tests/test_demo.py
 ├── requirements.txt / requirements-lock.txt
-└── setup.sh / run.sh / run_check.sh
+└── setup.sh / run*.sh (macOS·Linux), setup.bat / run*.bat (Windows)
 ```
 
 ---
