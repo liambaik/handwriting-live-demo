@@ -234,7 +234,14 @@ def make_cutout(img: np.ndarray, clf, hand_only: bool = True, **cfg_kw):
 def idle_preview(w: int, h: int) -> np.ndarray:
     """누끼 창 대기 화면: 손글씨로 판단되지 않아 누끼를 하지 않는 동안 보여 줌."""
     out = checkerboard_preview(np.zeros((h, w, 4), np.uint8))
-    cv2.putText(out, "no cutout (not handwritten)", (16, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (90, 90, 90), 2, cv2.LINE_AA)
+    text, font = "no cutout (not handwritten)", cv2.FONT_HERSHEY_SIMPLEX
+    (tw, _), _ = cv2.getTextSize(text, font, 1.0, 2)
+    scale = 0.8 * w / tw                                  # 글자 폭이 창 폭의 80% 가 되도록 크게
+    thick = max(2, int(round(scale * 2)))
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
+    org = ((w - tw) // 2, (h + th) // 2)                  # 가운데
+    cv2.putText(out, text, org, font, scale, (255, 255, 255), thick + 6, cv2.LINE_AA)   # 흰 테두리 (체크무늬 위에서도 잘 보이게)
+    cv2.putText(out, text, org, font, scale, (60, 60, 60), thick, cv2.LINE_AA)
     return out
 
 
