@@ -207,3 +207,72 @@ def handwritten_only(img: np.ndarray, clf, cfg: CutoutConfig = CutoutConfig()) -
             kept |= g["mask"]
     return {"mask": kept, "all_mask": all_mask, "groups": groups, "polarity": base["polarity"],
             "threshold": base["threshold"]}
+
+
+# ---------------------------------------------------------------- 백그라운드 계산 (카메라 화면이 끊기지 않게)
+class LatestWorker:
+    """무거운 계산(fn)을 별도 스레드에서 돌리는 '최신 입력만' 작업자.
+
+    submit() 은 기다리지 않고 바로 돌아온다. 계산 중에 submit 이 여러 번 와도 가장 최근 입력 하나만 남기고
+    나머지는 버린다 (밀린 프레임을 차례로 처리하면 화면이 점점 뒤처지므로). 결과는 latest() 로 가져간다.
+    OpenCV 연산은 GIL 을 놓으므로 메인 스레드의 카메라·화면 갱신과 겹쳐 돈다.
+    """
+
+    def __init__(self, fn):
+        import threading
+        self._fn = fn
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._job = None
+        self._result = None
+        self._error = None
+        self._gen = 0                 # reset 할 때마다 올림: 계산 도중 reset 되면 그 결과는 버림
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, name="cutout-worker", daemon=True)
+        self._thread.start()
+
+    def submit(self, *args) -> None:
+        with self._lock:
+            self._job = args
+        self._wake.set()
+
+    def latest(self):
+        """가장 최근에 끝난 결과 (아직 없으면 None)."""
+        with self._lock:
+            return self._result
+
+    def error(self):
+        with self._lock:
+            return self._error
+
+    def reset(self) -> None:
+        """대기 중인 입력과 이전 결과를 버린다 (모드를 바꿨을 때 옛 결과가 보이지 않게)."""
+        with self._lock:
+            self._job, self._result = None, None
+            self._gen += 1
+
+    def stop(self) -> None:
+        self._stop = True
+        self._wake.set()
+        self._thread.join(timeout=2)
+
+    def _run(self) -> None:
+        while True:
+            self._wake.wait()
+            if self._stop:
+                return
+            with self._lock:
+                job, self._job = self._job, None
+                gen = self._gen
+                self._wake.clear()
+            if job is None:
+                continue
+            try:
+                out = self._fn(*job)
+            except Exception as e:                    # 계산 오류가 카메라 화면을 죽이지 않게 기록만
+                with self._lock:
+                    self._error = e
+                continue
+            with self._lock:
+                if gen == self._gen:
+                    self._result = out

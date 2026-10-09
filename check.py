@@ -26,7 +26,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from hw_demo.cutout import CutoutConfig, checkerboard_preview, cutout, handwritten_only, save_png, to_rgba
+from hw_demo.cutout import (CutoutConfig, LatestWorker, checkerboard_preview, cutout, handwritten_only, save_png,
+                            to_rgba)
 from hw_demo.camera import Camera, load_rotation, save_rotation
 from hw_demo.keys import read_key
 from hw_demo.hw_features import DEFAULT_PARAMS, FEATURE_KEYS, HandwritingClassifier
@@ -304,6 +305,9 @@ def main(argv=None) -> int:
 
     history = deque(maxlen=args.smooth)
     debug, misses, show_cutout, hand_only = False, 0, False, not args.cutout_all
+    # 누끼는 계산이 0.2~0.3초 걸려 메인 반복문에서 하면 카메라 화면이 끊긴다 -> 별도 스레드에서 최신 프레임만 계산
+    worker = LatestWorker(lambda img, only: checkerboard_preview(
+        make_cutout(img, clf, only, hw_threshold=args.hw_threshold)[0]))
     try:
         while True:
             frame = cam.read()
@@ -323,9 +327,11 @@ def main(argv=None) -> int:
             show_one = sum(history) > len(history) / 2          # 최근 프레임 과반이 손글씨일 때만
             view = draw(frame, roi, show_one, d, debug, reason)
             cv2.imshow(WINDOW, view)
-            if show_cutout:                                       # 켰을 때만 계산 (프레임마다 모폴로지 연산)
-                rgba, _ = make_cutout(frame[y:y + h, x:x + w], clf, hand_only, hw_threshold=args.hw_threshold)
-                cv2.imshow(CUTOUT_WINDOW, checkerboard_preview(rgba))
+            if show_cutout:                                       # 켰을 때만. 계산은 스레드가 하고 여기서는 기다리지 않음
+                worker.submit(frame[y:y + h, x:x + w].copy(), hand_only)
+                preview = worker.latest()
+                if preview is not None:
+                    cv2.imshow(CUTOUT_WINDOW, preview)
 
             key = read_key(1)                                    # 한글 입력 상태여도 동작
             if key in ("q", "esc"):
@@ -334,10 +340,12 @@ def main(argv=None) -> int:
                 debug = not debug
             elif key == "m":
                 show_cutout = not show_cutout
+                worker.reset()
                 if not show_cutout:
                     cv2.destroyWindow(CUTOUT_WINDOW)
             elif key == "a":
                 hand_only = not hand_only
+                worker.reset()                                   # 옛 모드로 계산한 결과가 잠깐 보이지 않게
                 print("누끼: " + ("손글씨만 (인쇄 제외)" if hand_only else "모든 글씨 (인쇄 포함)"))
             elif key == "r":
                 save_rotation(cam.turn())
@@ -357,6 +365,7 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        worker.stop()
         cam.close()
         cv2.destroyAllWindows()
     return 0

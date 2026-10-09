@@ -124,3 +124,69 @@ def test_all_groups_rejected_gives_empty_cutout():
     r = handwritten_only(img, _FakeClf([False, False]))
     assert not r["mask"].any()
     assert (to_rgba(img, r["mask"])[..., 3] == 0).all()
+
+
+# --- 백그라운드 작업자 -----------------------------------------------------------------
+def _wait_for(cond, timeout=3.0):
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_worker_submit_does_not_block_and_returns_result():
+    import time
+    from hw_demo.cutout import LatestWorker
+    w = LatestWorker(lambda x: (time.sleep(0.2), x * 2)[1])
+    t = time.time()
+    w.submit(21)
+    assert time.time() - t < 0.05                      # 계산(0.2초)을 기다리지 않음
+    assert w.latest() is None
+    assert _wait_for(lambda: w.latest() == 42)
+    w.stop()
+
+
+def test_worker_keeps_only_newest_pending_job():
+    import time
+    from hw_demo.cutout import LatestWorker
+    done = []
+
+    def slow(x):
+        time.sleep(0.15)
+        done.append(x)
+        return x
+
+    w = LatestWorker(slow)
+    w.submit(1)
+    time.sleep(0.03)                                   # 1번 계산 중
+    for v in (2, 3, 4):                                # 계산 중에 쌓인 입력
+        w.submit(v)
+    assert _wait_for(lambda: w.latest() == 4)
+    assert done == [1, 4]                              # 2, 3 은 건너뜀
+    w.stop()
+
+
+def test_worker_reset_discards_in_flight_result_and_survives_errors():
+    import time
+    from hw_demo.cutout import LatestWorker
+
+    def fn(x):
+        time.sleep(0.15)
+        if x < 0:
+            raise ValueError("boom")
+        return x
+
+    w = LatestWorker(fn)
+    w.submit(5)
+    time.sleep(0.03)
+    w.reset()                                          # 계산 도중 reset: 옛 결과 버림
+    time.sleep(0.3)
+    assert w.latest() is None
+    w.submit(-1)                                       # 예외가 나도 스레드는 살아 있음
+    assert _wait_for(lambda: w.error() is not None)
+    w.submit(7)
+    assert _wait_for(lambda: w.latest() == 7)
+    w.stop()
