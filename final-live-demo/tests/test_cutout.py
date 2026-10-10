@@ -1,0 +1,251 @@
+"""손글씨 누끼(hw_demo/cutout.py) 테스트. torch 없이 실행됨."""
+import cv2
+import numpy as np
+
+from hw_demo.cutout import CutoutConfig, checkerboard_preview, cutout, stroke_mask
+
+
+def _truth(text="HK357", ink=40, paper=225, size=(220, 560), color=None, thick=7):
+    """종이 + 글씨. (이미지, 정답 마스크)"""
+    truth = np.zeros(size, np.uint8)
+    cv2.putText(truth, text, (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 3.0, 255, thick, cv2.LINE_AA)
+    truth = truth > 127
+    if color is None:
+        img = np.full(size, paper, np.uint8)
+        img[truth] = ink
+    else:
+        img = np.full(size + (3,), paper, np.uint8)
+        img[truth] = color
+    return img, truth
+
+
+def _iou(a, b):
+    return (a & b).sum() / max((a | b).sum(), 1)
+
+
+def test_dark_ink_on_paper():
+    img, truth = _truth()
+    rgba, mask, _ = cutout(img)
+    assert rgba.shape == img.shape + (4,) or rgba.shape == img.shape[:2] + (4,)
+    assert _iou(mask, truth) > 0.7
+    assert (rgba[..., 3][~cv2.dilate(truth.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)] == 0).all()
+
+
+def test_bright_ink_on_dark_background():
+    img, truth = _truth(ink=230, paper=40)
+    assert stroke_mask(img)["polarity"] == "bright"
+    assert _iou(stroke_mask(img)["mask"], truth) > 0.7
+
+
+def test_yellow_pen_is_caught_in_color():
+    img, truth = _truth(color=(40, 200, 235), paper=235)          # 노란 펜 (BGR): 흑백에서는 종이와 거의 같은 밝기
+    assert _iou(stroke_mask(img)["mask"], truth) > 0.6
+
+
+def test_large_shadow_and_border_objects_are_not_strokes():
+    img, truth = _truth()
+    cv2.circle(img, (470, 60), 45, 90, -1)                         # 큰 어두운 얼룩 (덩어리)
+    img[:, :6] = 40                                                # 테두리에 닿은 세로 선
+    cv2.line(img, (0, 200), (559, 200), 60, 3)                     # 화면을 가로지르는 긴 선
+    m = stroke_mask(img)["mask"]
+    assert not m[:, :8].any()
+    assert not m[15:105, 425:515].any()
+    assert not m[198:203, :].any()
+    assert (m & truth).sum() / truth.sum() > 0.7                   # 글씨는 그대로 남음
+
+
+def test_long_line_kept_when_option_off():
+    img, _ = _truth()
+    cv2.line(img, (20, 200), (539, 200), 60, 3)
+    assert stroke_mask(img, CutoutConfig(drop_long=False))["mask"][199:202, 100:400].any()
+
+
+def test_blank_paper_gives_empty_cutout():
+    rng = np.random.default_rng(0)
+    img = np.full((200, 300), 220, np.uint8) + rng.integers(0, 4, (200, 300)).astype(np.uint8)
+    rgba, mask, _ = cutout(img)
+    assert not mask.any() and (rgba[..., 3] == 0).all()
+
+
+def test_preview_and_feather():
+    img, _ = _truth()
+    rgba, _, _ = cutout(img, CutoutConfig(feather=5))
+    assert ((rgba[..., 3] > 0) & (rgba[..., 3] < 255)).any()       # 부드러운 가장자리
+    prev = checkerboard_preview(rgba)
+    assert prev.shape == rgba.shape[:2] + (3,) and prev.dtype == np.uint8
+
+
+def test_large_photo_is_downscaled_but_mask_matches_input_size():
+    img, _ = _truth(size=(220, 560))
+    big = cv2.resize(img, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR)
+    assert stroke_mask(big)["mask"].shape == big.shape[:2]
+
+
+# --- 수기만 남기기 (인쇄 글자 제외) -------------------------------------------------
+class _FakeClf:
+    """묶음을 위에서 아래 순서로 받아 verdicts 순서대로 손글씨 확률을 돌려줌 (판별 규칙이 아니라 배선 검증용)."""
+
+    def __init__(self, verdicts):
+        self.verdicts = list(verdicts)
+
+    def decide(self, gray):
+        from types import SimpleNamespace
+        p = 0.9 if self.verdicts.pop(0) else 0.1
+        return SimpleNamespace(prob=p, is_handwritten=p >= 0.5)
+
+
+def _two_blocks():
+    img = np.full((260, 700), 225, np.uint8)
+    cv2.putText(img, "HK", (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 3.0, 40, 7, cv2.LINE_AA)       # 위쪽: 가짜 '수기'
+    cv2.putText(img, "357", (330, 230), cv2.FONT_HERSHEY_SIMPLEX, 3.0, 40, 7, cv2.LINE_AA)     # 아래 오른쪽: 가짜 '인쇄'
+    return img
+
+
+def test_group_strokes_splits_distant_text():
+    from hw_demo.cutout import group_strokes
+    m = stroke_mask(_two_blocks())["mask"]
+    groups = group_strokes(m)
+    assert len(groups) == 2
+    assert groups[0]["box"][1] < groups[1]["box"][1]
+
+
+def test_handwritten_only_keeps_only_groups_judged_handwritten():
+    from hw_demo.cutout import handwritten_only
+    img = _two_blocks()
+    r = handwritten_only(img, _FakeClf([True, False]))            # 위쪽 묶음만 '수기'
+    assert r["mask"][:130].any() and not r["mask"][130:].any()
+    assert r["all_mask"][130:].any()                              # 전체 획에는 아래 글자도 있음
+    assert [g["keep"] for g in r["groups"]] == [True, False]
+
+
+def test_all_groups_rejected_gives_empty_cutout():
+    from hw_demo.cutout import handwritten_only, to_rgba
+    img = _two_blocks()
+    r = handwritten_only(img, _FakeClf([False, False]))
+    assert not r["mask"].any()
+    assert (to_rgba(img, r["mask"])[..., 3] == 0).all()
+
+
+# --- 백그라운드 작업자 -----------------------------------------------------------------
+def _wait_for(cond, timeout=3.0):
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_worker_submit_does_not_block_and_returns_result():
+    import time
+    from hw_demo.cutout import LatestWorker
+    w = LatestWorker(lambda x: (time.sleep(0.2), x * 2)[1])
+    t = time.time()
+    w.submit(21)
+    assert time.time() - t < 0.05                      # 계산(0.2초)을 기다리지 않음
+    assert w.latest() is None
+    assert _wait_for(lambda: w.latest() == 42)
+    w.stop()
+
+
+def test_worker_keeps_only_newest_pending_job():
+    import time
+    from hw_demo.cutout import LatestWorker
+    done = []
+
+    def slow(x):
+        time.sleep(0.15)
+        done.append(x)
+        return x
+
+    w = LatestWorker(slow)
+    w.submit(1)
+    time.sleep(0.03)                                   # 1번 계산 중
+    for v in (2, 3, 4):                                # 계산 중에 쌓인 입력
+        w.submit(v)
+    assert _wait_for(lambda: w.latest() == 4)
+    assert done == [1, 4]                              # 2, 3 은 건너뜀
+    w.stop()
+
+
+def test_worker_reset_discards_in_flight_result_and_survives_errors():
+    import time
+    from hw_demo.cutout import LatestWorker
+
+    def fn(x):
+        time.sleep(0.15)
+        if x < 0:
+            raise ValueError("boom")
+        return x
+
+    w = LatestWorker(fn)
+    w.submit(5)
+    time.sleep(0.03)
+    w.reset()                                          # 계산 도중 reset: 옛 결과 버림
+    time.sleep(0.3)
+    assert w.latest() is None
+    w.submit(-1)                                       # 예외가 나도 스레드는 살아 있음
+    assert _wait_for(lambda: w.error() is not None)
+    w.submit(7)
+    assert _wait_for(lambda: w.latest() == 7)
+    w.stop()
+
+
+# --- 표면 요철·흐린 얼룩 제거 ---------------------------------------------------------
+def _rough_pipe_with_pen(seed=0):
+    """울퉁불퉁한 회색 철판(저대비 얼룩 다수) 위에 진한 펜 글씨. (이미지, 글씨 정답 마스크)"""
+    rng = np.random.default_rng(seed)
+    noise = cv2.GaussianBlur(rng.normal(0, 1, (260, 700)).astype(np.float32), (0, 0), 3)
+    patches = cv2.GaussianBlur((noise > 0.9 * noise.std()).astype(np.float32), (0, 0), 1.2)   # 산화·긁힘 얼룩: 가장자리가 뚜렷한 어두운 패치
+    fine = cv2.GaussianBlur(rng.normal(0, 1, (260, 700)).astype(np.float32), (0, 0), 1.2)
+    img = np.clip(135 - 32 * patches + 5 * fine, 0, 255).astype(np.uint8)
+    truth = np.zeros(img.shape, np.uint8)
+    cv2.putText(truth, "HK357", (120, 170), cv2.FONT_HERSHEY_SIMPLEX, 3.0, 255, 7, cv2.LINE_AA)
+    truth = truth > 127
+    img[truth] = 25                                                      # 확실히 진한 펜
+    return img, truth
+
+
+def test_surface_texture_is_not_cut_out_but_pen_is():
+    img, truth = _rough_pipe_with_pen()
+    relative = stroke_mask(img)["mask"]
+    absolute = stroke_mask(img, CutoutConfig(rel_thr=0.0, core_frac=0.0))["mask"]
+    near = cv2.dilate(truth.astype(np.uint8), np.ones((15, 15), np.uint8)).astype(bool)
+    assert (relative & truth).sum() / truth.sum() > 0.7                  # 글씨는 남음
+    assert (relative & ~near).sum() < 0.3 * (absolute & ~near).sum() or (relative & ~near).sum() < 50   # 요철 오검출 대폭 감소
+    assert _iou(relative, truth) > _iou(absolute, truth)
+
+
+# --- 피부색(손가락) 영역 제외 ------------------------------------------------------------
+def _hand_and_pen():
+    """흰 종이 + 파란 펜 글씨 + 오른쪽에 살색 손가락(가장자리에 어두운 그림자 선)."""
+    img = np.full((260, 700, 3), 230, np.uint8)
+    cv2.putText(img, "HK", (40, 150), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (120, 30, 20), 7, cv2.LINE_AA)    # 파란 펜 (BGR)
+    truth = np.zeros(img.shape[:2], bool)
+    truth[cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) < 120] = True
+    cv2.rectangle(img, (470, 0), (699, 259), (150, 175, 225), -1)               # 손가락 (BGR 살색)
+    cv2.line(img, (470, 90), (470, 170), (25, 30, 55), 3)                      # 손가락 가장자리 그림자
+    cv2.line(img, (520, 90), (540, 170), (25, 30, 55), 3)                      # 손가락 마디 주름
+    return img, truth
+
+
+def test_skin_region_found_and_strokes_inside_are_dropped():
+    from hw_demo.cutout import skin_region
+    img, truth = _hand_and_pen()
+    skin = skin_region(img)
+    assert skin[:, 520:690].mean() > 0.9 and not skin[:, :300].any()
+    with_skin = stroke_mask(img)["mask"]
+    without = stroke_mask(img, CutoutConfig(drop_skin=False))["mask"]
+    assert without[:, 465:].any()                       # 끄면 손가락 선이 획으로 잡힘
+    assert not with_skin[:, 465:].any()                 # 켜면 제외
+    assert (with_skin & truth).sum() / truth.sum() > 0.7  # 펜 글씨는 그대로
+
+
+def test_small_skin_toned_ink_is_not_treated_as_hand():
+    """붉은 펜 글씨(살색 범위에 걸릴 수 있음)는 면적이 작아서 손으로 취급하지 않는다."""
+    img = np.full((260, 700, 3), 235, np.uint8)
+    cv2.putText(img, "HK357", (40, 170), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (60, 90, 215), 7, cv2.LINE_AA)   # 주황빛 빨강
+    from hw_demo.cutout import skin_region
+    assert not skin_region(img).any()
+    assert stroke_mask(img)["mask"].sum() > 3000

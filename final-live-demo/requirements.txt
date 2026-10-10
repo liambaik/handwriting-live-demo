@@ -1,0 +1,7 @@
+# 실행에 필요한 패키지 (Python 3.9 이상. 3.9 에서는 torch 2.8 / torchvision 0.23 이 설치됨)
+torch>=2.2
+torchvision>=0.17
+opencv-python>=4.8
+numpy>=1.24
+# 테스트용
+pytest>=7.0

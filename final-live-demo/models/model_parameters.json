@@ -1,0 +1,99 @@
+{
+  "dataset": {
+    "formal": 20,
+    "handwritten": 100,
+    "total": 120
+  },
+  "model": "PyTorch logistic regression",
+  "loss": "balanced Binary Cross Entropy + L2 regularization",
+  "selected_lambda": 0.001,
+  "selection_rule": "10x repeated 5-fold stratified cross-validation; minimum mean balanced validation log loss",
+  "decision_threshold": 0.5,
+  "bias": 7.482732128040037,
+  "features": [
+    {
+      "index": 1,
+      "name": "획 두께 변화",
+      "median_for_missing": 0.187391,
+      "mean": 0.203607,
+      "std": 0.05645,
+      "weight": 3.029174
+    },
+    {
+      "index": 2,
+      "name": "문자 간격 편차",
+      "median_for_missing": 0.527449,
+      "mean": 0.587008,
+      "std": 0.51799,
+      "weight": 0.292099
+    },
+    {
+      "index": 3,
+      "name": "기울기 변화",
+      "median_for_missing": 13.337734,
+      "mean": 13.413726,
+      "std": 2.41352,
+      "weight": -0.728329
+    },
+    {
+      "index": 4,
+      "name": "Baseline 흔들림",
+      "median_for_missing": 0.101757,
+      "mean": 0.265615,
+      "std": 0.407696,
+      "weight": 1.060723
+    },
+    {
+      "index": 5,
+      "name": "곡률 변화",
+      "median_for_missing": 0.489742,
+      "mean": 0.502039,
+      "std": 0.084743,
+      "weight": 1.034635
+    },
+    {
+      "index": 6,
+      "name": "연결요소 크기 분산",
+      "median_for_missing": 0.331433,
+      "mean": 0.387043,
+      "std": 0.249653,
+      "weight": 4.137142
+    },
+    {
+      "index": 7,
+      "name": "외곽선 불규칙도",
+      "median_for_missing": 2.078955,
+      "mean": 2.12375,
+      "std": 0.415068,
+      "weight": 1.593824
+    },
+    {
+      "index": 8,
+      "name": "획 연결성",
+      "median_for_missing": 0.32539,
+      "mean": 0.364883,
+      "std": 0.127257,
+      "weight": 3.910522
+    }
+  ],
+  "final_training_metrics": {
+    "balanced_accuracy": 0.995,
+    "precision": 1.0,
+    "recall": 0.99,
+    "f1": 0.9949748744,
+    "roc_auc": 1.0,
+    "balanced_bce": 0.0263759364,
+    "l2_penalty": 0.0234678452,
+    "total_objective": 0.0498437816,
+    "rmse": 0.0809276744,
+    "r2": 0.952845123
+  },
+  "cross_validation_at_selected_lambda": {
+    "mean_balanced_accuracy": 0.983,
+    "mean_f1": 0.982321,
+    "mean_roc_auc": 0.9955,
+    "mean_precision": 1.0,
+    "mean_recall": 0.966,
+    "mean_balanced_log_loss": 0.064474
+  }
+}
